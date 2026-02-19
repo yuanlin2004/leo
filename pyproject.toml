@@ -1,3 +1,7 @@
 [project]
 name = "leo"
 version="0.01"
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "tsimple_agent.py", "treact_agent.py"]
+pythonpath = ["src"]

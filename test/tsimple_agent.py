@@ -1,39 +1,42 @@
-import os
+import json
 
 from leo.agents import SimpleAgent
-from leo.core import LeoLLMClient, LeoLLMException
+from leo.tools.registry import ToolsRegistry
+
+from test.fakes import FakeLLM, FakeToolCall
 
 
-def main() -> None:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        print("Missing OPENROUTER_API_KEY.")
-        return
+def test_simple_agent_runs_tool_then_returns_final_answer() -> None:
+    called: list[tuple[str, str]] = []
 
-    if not os.getenv("TAVILY_API_KEY") and not os.getenv("TAVILYKEY"):
-        print("Missing TAVILY_API_KEY (or TAVILYKEY fallback).")
-        return
+    def echo_tool(query: str) -> str:
+        called.append(("echo", query))
+        return f"tool:{query}"
 
-    llm = LeoLLMClient(
-        model="google/gemini-3-flash-preview",
-        provider="openrouter",
-        temperature=0.2,
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="echo",
+        description="Echo back input.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=echo_tool,
     )
-    agent = SimpleAgent(name="leo-simple-agent", llm=llm)
 
-    user_input = "Find the current temperature in San Francisco and that in Shanghai and tell me which is higher today."
-    try:
-        result = agent.run(user_input=user_input, max_iterations=6)
-    except LeoLLMException as exc:
-        print(f"LLM error: {exc}")
-        return
-    except Exception as exc:
-        print(f"Agent run failed: {exc}")
-        return
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "I will use a tool.",
+                "tool_calls": [FakeToolCall("call-1", "echo", json.dumps({"query": "SF"}))],
+            },
+            {"content": "San Francisco is warmer."},
+        ]
+    )
+    agent = SimpleAgent(name="simple", llm=llm, tools_registry=registry)
 
-    print("Prompt:", user_input)
-    print("\nAgent response:\n")
-    print(result)
+    result = agent.run("compare temperatures", max_iterations=4)
 
-
-if __name__ == "__main__":
-    main()
+    assert result == "San Francisco is warmer."
+    assert called == [("echo", "SF")]

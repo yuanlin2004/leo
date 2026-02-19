@@ -1,6 +1,5 @@
 import os
 from typing import Any, Callable, Literal, Optional
-from openai import OpenAI
 
 # Keep this one simple for now. Customized for one provider and one model is fine. 
 
@@ -27,6 +26,13 @@ class LeoLLMClient:
         timeout: Optional[int] = None,
         **kwargs
     ):
+        try:
+            from openai import OpenAI
+        except ModuleNotFoundError as exc:
+            raise LeoLLMException(
+                "Missing dependency: openai. Install it with `pip install openai`."
+            ) from exc
+
         self._model = model 
         self._provider = provider.lower() 
         self._temperature = temperature

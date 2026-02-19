@@ -48,6 +48,7 @@ def web_search(
 
     client = TavilyClient(api_key=_resolve_tavily_api_key(api_key))
     try:
+        print(f"Performing web search for query: {query!r}")
         response = client.search(
             query=query.strip(),
             search_depth=search_depth,
@@ -62,6 +63,8 @@ def web_search(
                 f"url={item.get('url')!r} "
                 f"score={item.get('score')!r}"
             )
-        return "\n".join(lines)
+        res = "\n".join(lines)
+        print(f"Web search completed. Found {res}")
+        return res
     except Exception as exc:  # pragma: no cover - SDK/network path
         raise WebSearchError(f"Tavily search failed: {exc}") from exc

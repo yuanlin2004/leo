@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from ..core.llm import LeoLLMClient, LeoLLMException
 from ..tools.registry import ToolsRegistry
@@ -42,6 +43,24 @@ class SimpleAgent(Agent):
     def __str__(self) -> str:
         return f"SimpleAgent(name={self.name})"
 
+    @staticmethod
+    def _parse_tool_args(raw_args: str | None) -> dict[str, Any]:
+        if not raw_args:
+            return {}
+        parsed = json.loads(raw_args)
+        if not isinstance(parsed, dict):
+            raise ValueError("Tool arguments must decode to a JSON object.")
+        return parsed
+
+    def _format_tool_result(self, result: Any) -> str:
+        tool_text = result if isinstance(result, str) else json.dumps(result)
+        if len(tool_text) <= self._MAX_TOOL_OUTPUT_CHARS:
+            return tool_text
+        return (
+            tool_text[: self._MAX_TOOL_OUTPUT_CHARS]
+            + "\n...[truncated to keep context window manageable]"
+        )
+
 
     def run(self, user_input: str, max_iterations: int = 10) -> str:
         messages = [
@@ -69,18 +88,24 @@ class SimpleAgent(Agent):
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments or "{}")
                 try:
-                    result = self.tools_registry.execute(tool_name, **tool_args)
+                    tool_args = self._parse_tool_args(tool_call.function.arguments)
                 except Exception as exc:
-                    result = f"Tool execution failed for {tool_name}: {exc}"
+                    tool_args = {}
+                    result = f"Tool argument parsing failed for {tool_name}: {exc}"
+                else:
+                    try:
+                        result = self.tools_registry.execute(tool_name, **tool_args)
+                    except Exception as exc:
+                        result = f"Tool execution failed for {tool_name}: {exc}"
 
                 conversation.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": result if isinstance(result, str) else json.dumps(result),
+                        "content": self._format_tool_result(result),
                     }
                 )
 
         raise LeoLLMException("Max iterations reached without a final response.")
+    _MAX_TOOL_OUTPUT_CHARS = 4000
