@@ -36,7 +36,7 @@ class ReActAgent(Agent):
         tools_registry: ToolsRegistry | None = None,
         extra_system_prompt: str | None = None,
     ):
-        self.tools_registry = tools_registry or ToolsRegistry.default_registry()
+        self.tools_registry = tools_registry or ToolsRegistry()
 
         system_prompt = REACT_AGENT_SYSTEM_PROMPT_BASE
         system_prompt += "The following tools are available to you:"
@@ -86,10 +86,10 @@ class ReActAgent(Agent):
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_input},
         ]
-        tools = self.tools_registry.get_tool_schemas()
         action_counts: dict[str, int] = {}
 
         for _iteration in range(max_iterations):
+            tools = self.tools_registry.get_tool_schemas()
             assistant_message = self.llm.complete(messages=conversation, tools=tools)
             tool_calls = assistant_message.tool_calls or []
             assistant_content = assistant_message.content or ""

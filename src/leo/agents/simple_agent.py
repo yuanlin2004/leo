@@ -26,7 +26,7 @@ class SimpleAgent(Agent):
         tools_registry: ToolsRegistry | None = None,
         extra_system_prompt: str | None = None,
     ):
-        self.tools_registry = tools_registry or ToolsRegistry.default_registry()
+        self.tools_registry = tools_registry or ToolsRegistry()
 
         # construct the system prompt by combining the base prompt with any extra instructions
         system_prompt = SIMPLE_AGENT_SYSTEM_PROMPT_BASE
@@ -68,10 +68,10 @@ class SimpleAgent(Agent):
             {"role": "user", "content": user_input},
         ]
 
-        tools = self.tools_registry.get_tool_schemas()
         conversation = list(messages)
 
         for _ in range(max_iterations):
+            tools = self.tools_registry.get_tool_schemas()
             assistant_message = self.llm.complete(messages=conversation, tools=tools)
             tool_calls = assistant_message.tool_calls or []
 

@@ -1,21 +1,11 @@
 from __future__ import annotations
 
-from leo.tools.web_search import WebSearchError, web_search
+from leo.tools.registry import ToolsRegistry
 
 
 def main() -> None:
-    try:
-        response = web_search(
-            "Yuan Lin NVIDIA",
-            search_depth="advanced",
-            max_results=5,
-            include_answer=True,
-        )
-    except WebSearchError as exc:
-        print(f"web_search failed: {exc}")
-        return
-
-    print(response)
+    registry = ToolsRegistry()
+    print(registry.list_available_skills())
 
 
 if __name__ == "__main__":

@@ -3,18 +3,18 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-try:
-    from tavily import TavilyClient
-except ImportError:  # pragma: no cover - depends on optional dependency
-    TavilyClient = None
-
 
 class WebSearchError(Exception):
     pass
 
 
+try:
+    from tavily import TavilyClient
+except ImportError:  # pragma: no cover - optional dependency
+    TavilyClient = None
+
+
 def _resolve_tavily_api_key(api_key: str | None) -> str:
-    # Keep backward compatibility with older local env var usage.
     resolved_key = api_key or os.getenv("TAVILY_API_KEY") or os.getenv("TAVILYKEY")
     if not resolved_key:
         raise WebSearchError(
@@ -32,12 +32,8 @@ def web_search(
     include_raw_content: bool = False,
     api_key: str | None = None,
 ) -> str:
-    """
-    Search the web using Tavily and return a formatted string summary.
-    """
     if not isinstance(query, str) or not query.strip():
         raise WebSearchError("query must be a non-empty string.")
-
     if max_results <= 0:
         raise WebSearchError("max_results must be greater than 0.")
 
@@ -48,7 +44,6 @@ def web_search(
 
     client = TavilyClient(api_key=_resolve_tavily_api_key(api_key))
     try:
-        print(f"Performing web search for query: {query!r}")
         response = client.search(
             query=query.strip(),
             search_depth=search_depth,
@@ -63,8 +58,10 @@ def web_search(
                 f"url={item.get('url')!r} "
                 f"score={item.get('score')!r}"
             )
-        res = "\n".join(lines)
-        print(f"Web search completed. Found {res}")
-        return res
+        return "\n".join(lines)
     except Exception as exc:  # pragma: no cover - SDK/network path
         raise WebSearchError(f"Tavily search failed: {exc}") from exc
+
+
+def register_actions() -> dict[str, object]:
+    return {"web_search": web_search}
