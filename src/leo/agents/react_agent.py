@@ -9,7 +9,7 @@ REACT_AGENT_SYSTEM_PROMPT_BASE = """
 You are a ReAct-style assistant.
 You operate in iterative steps:
 1) Think briefly about what is needed.
-2) If external facts are needed, call exactly one tool.
+2) If external facts are needed, call one or more tools.
 3) Read the observation and decide the next step.
 4) When done, respond with: Final Answer: <answer>
 
@@ -18,6 +18,7 @@ Rules:
 - Do not call the same tool with the same arguments repeatedly unless new evidence justifies it.
 - Keep intermediate reasoning short and practical.
 - Final answer must be clear, user-facing, and concise.
+- If you suspect a skill may help, call list_available_skills first to discover options, then call get_skill_details before using any skill action.
 """
 
 
@@ -72,6 +73,19 @@ class ReActAgent(Agent):
             raise ValueError("Tool arguments must decode to a JSON object.")
         return parsed
 
+    @staticmethod
+    def _build_action_key(tool_name: str, tool_args: dict[str, Any]) -> str:
+        try:
+            canonical_args = json.dumps(
+                tool_args,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+        except TypeError:
+            canonical_args = repr(tool_args)
+        return f"{tool_name}:{canonical_args}"
+
     def _format_tool_result(self, result: Any) -> str:
         tool_text = result if isinstance(result, str) else json.dumps(result)
         if len(tool_text) <= self._MAX_TOOL_OUTPUT_CHARS:
@@ -108,51 +122,33 @@ class ReActAgent(Agent):
                 }
             )
 
-            # ReAct mechanic: execute exactly one real tool action per step.
-            primary_call = tool_calls[0]
-            extra_calls = tool_calls[1:]
-
-            tool_name = primary_call.function.name
-            try:
-                tool_args = self._parse_tool_args(primary_call.function.arguments)
-            except Exception as exc:
-                tool_args = {}
-                result = f"Tool argument parsing failed for {tool_name}: {exc}"
-            else:
-                action_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-                action_counts[action_key] = action_counts.get(action_key, 0) + 1
-                if action_counts[action_key] > self._MAX_REPEAT_ACTIONS:
-                    result = (
-                        "Skipped repeated tool action to avoid loops. "
-                        "Use a different query/arguments or provide Final Answer."
-                    )
-                else:
-                    try:
-                        result = self.tools_registry.execute(tool_name, **tool_args)
-                    except Exception as exc:
-                        result = f"Tool execution failed for {tool_name}: {exc}"
-
-            conversation.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": primary_call.id,
-                    "content": self._format_tool_result(result),
-                }
-            )
-
-            # Keep protocol valid for provider APIs that expect every call id to be answered.
-            for extra_call in extra_calls:
+            # Execute all tool calls returned in this assistant turn.
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
                 try:
-                    extra_name = extra_call.function.name
-                except Exception:
-                    extra_name = "unknown_tool"
+                    tool_args = self._parse_tool_args(tool_call.function.arguments)
+                except Exception as exc:
+                    tool_args = {}
+                    result = f"Tool argument parsing failed for {tool_name}: {exc}"
+                else:
+                    action_key = self._build_action_key(tool_name, tool_args)
+                    action_counts[action_key] = action_counts.get(action_key, 0) + 1
+                    if action_counts[action_key] > self._MAX_REPEAT_ACTIONS:
+                        result = (
+                            "Skipped repeated tool action to avoid loops. "
+                            "Use a different query/arguments or provide Final Answer."
+                        )
+                    else:
+                        try:
+                            result = self.tools_registry.execute(tool_name, **tool_args)
+                        except Exception as exc:
+                            result = f"Tool execution failed for {tool_name}: {exc}"
+
                 conversation.append(
                     {
                         "role": "tool",
-                        "tool_call_id": extra_call.id,
-                        "content": (
-                            f"Skipped {extra_name}: ReActAgent executes one tool call per step."
-                        ),
+                        "tool_call_id": tool_call.id,
+                        "content": self._format_tool_result(result),
                     }
                 )
 

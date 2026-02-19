@@ -46,25 +46,6 @@ class ToolsRegistry:
             handler=lambda: self.list_available_skills(),
         )
         self.register_tool(
-            name="search_skills",
-            description="Search discovered skills by keyword.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query."},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of skills to return.",
-                    },
-                },
-                "required": ["query"],
-            },
-            handler=lambda query, max_results=5: self.search_skills(
-                query=query,
-                max_results=max_results,
-            ),
-        )
-        self.register_tool(
             name="get_skill_details",
             description=(
                 "Load one skill lazily and return its instructions. "
@@ -216,27 +197,6 @@ class ToolsRegistry:
             for skill in sorted(self._skills.values(), key=lambda item: item.name)
         ]
 
-    def search_skills(self, query: str, max_results: int = 5) -> list[dict[str, Any]]:
-        phrase = (query or "").strip().lower()
-        if not phrase:
-            return []
-
-        ranked: list[tuple[int, SkillManifest]] = []
-        for skill in self._skills.values():
-            haystack = f"{skill.name} {skill.description}".lower()
-            score = haystack.count(phrase)
-            if score == 0:
-                score = sum(1 for token in phrase.split() if token and token in haystack)
-            if score > 0:
-                ranked.append((score, skill))
-
-        ranked.sort(key=lambda item: (-item[0], item[1].name))
-        limit = max_results if max_results > 0 else 5
-        return [
-            {"name": skill.name, "description": skill.description, "score": score}
-            for score, skill in ranked[:limit]
-        ]
-
     def _load_skill_actions(self, skill: SkillManifest) -> None:
         script_path = skill.path.parent / "scripts" / "actions.py"
         if not script_path.exists():
@@ -337,14 +297,8 @@ class ToolsRegistry:
                         "description": "Action from a loaded skill.",
                         "parameters": {
                             "type": "object",
-                            "properties": {
-                                "query": {"type": "string"},
-                                "search_depth": {"type": "string"},
-                                "max_results": {"type": "integer"},
-                                "include_answer": {"type": "boolean"},
-                                "include_raw_content": {"type": "boolean"},
-                                "api_key": {"type": "string"},
-                            },
+                            "properties": {},
+                            "additionalProperties": True,
                         },
                     },
                 }

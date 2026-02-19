@@ -11,12 +11,16 @@ from leo.tools.registry import ToolsRegistry
 from test.fakes import FakeLLM, FakeToolCall
 
 
-def test_react_agent_executes_single_tool_per_step_and_extracts_final_answer() -> None:
+def test_react_agent_executes_all_tool_calls_in_a_step_and_extracts_final_answer() -> None:
     called: list[tuple[str, str]] = []
 
     def lookup(query: str) -> str:
         called.append(("lookup", query))
         return f"obs:{query}"
+
+    def other() -> str:
+        called.append(("other", ""))
+        return "unused"
 
     registry = ToolsRegistry()
     registry.register_tool(
@@ -33,7 +37,7 @@ def test_react_agent_executes_single_tool_per_step_and_extracts_final_answer() -
         name="other",
         description="Other tool.",
         parameters={"type": "object", "properties": {}},
-        handler=lambda: "unused",
+        handler=other,
     )
 
     llm = FakeLLM(
@@ -53,7 +57,7 @@ def test_react_agent_executes_single_tool_per_step_and_extracts_final_answer() -
     result = agent.run("do thing", max_iterations=4)
 
     assert result == "done"
-    assert called == [("lookup", "a")]
+    assert called == [("lookup", "a"), ("other", "")]
 
 
 def test_react_agent_stops_repeated_same_action() -> None:
@@ -91,6 +95,50 @@ def test_react_agent_stops_repeated_same_action() -> None:
     assert result == "fallback"
     # The 3rd identical action is skipped by the loop guard.
     assert called == ["same", "same"]
+
+
+def test_react_agent_does_not_treat_different_args_as_repeat() -> None:
+    called: list[str] = []
+
+    def web_search(query: str) -> str:
+        called.append(query)
+        return f"obs:{query}"
+
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="web_search",
+        description="Search the web.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=web_search,
+    )
+
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "Need first search.",
+                "tool_calls": [
+                    FakeToolCall("call-1", "web_search", json.dumps({"query": "openai news"}))
+                ],
+            },
+            {
+                "content": "Need second search with different args.",
+                "tool_calls": [
+                    FakeToolCall("call-2", "web_search", json.dumps({"query": "anthropic news"}))
+                ],
+            },
+            {"content": "Final Answer: done"},
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("compare news", max_iterations=6)
+
+    assert result == "done"
+    assert called == ["openai news", "anthropic news"]
 
 
 def test_react_agent_uses_web_search_skill_with_lazy_load_real() -> None:

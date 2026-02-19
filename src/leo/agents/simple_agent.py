@@ -11,6 +11,7 @@ Always try to use tools if they can help you answer the question or complete the
 If you don't know the answer, use the tools to find it out. 
 Always provide a final answer to the user after using tools, even if you had to use them multiple times. 
 Be concise and clear in your responses.
+If you suspect a skill may help, call list_available_skills first to discover options, then call get_skill_details before using any skill action.
 """
 
 class SimpleAgent(Agent):
