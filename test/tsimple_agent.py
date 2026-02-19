@@ -20,7 +20,7 @@ def main() -> None:
     )
     agent = SimpleAgent(name="leo-simple-agent", llm=llm)
 
-    user_input = "Find recent info about NVIDIA Blackwell and summarize in 3 bullets."
+    user_input = "Find the current temperature in San Francisco and that in Shanghai and tell me which is higher today."
     try:
         result = agent.run(user_input=user_input, max_iterations=6)
     except LeoLLMException as exc:

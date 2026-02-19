@@ -1,5 +1,5 @@
 import os
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 from openai import OpenAI
 
 # Keep this one simple for now. Customized for one provider and one model is fine. 
@@ -49,6 +49,24 @@ class LeoLLMClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
+        max_iterations: int = 1,
+        **kwargs,
+    ) -> str:
+        # Keep backward compatibility for callers that expect invoke() to return
+        # plain text, while tool orchestration now lives in agents.
+        if tool_executor is not None or max_iterations != 1:
+            raise LeoLLMException(
+                "invoke() no longer orchestrates tool calls. "
+                "Use an agent to execute tools."
+            )
+        assistant_message = self.complete(messages=messages, tools=tools, **kwargs)
+        return assistant_message.content or ""
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> Any:
         try:
@@ -65,7 +83,10 @@ class LeoLLMClient:
             )
             if tools:
                 request["tools"] = tools
+
             response = self._client.chat.completions.create(**request)
             return response.choices[0].message
         except Exception as e:
+            if isinstance(e, LeoLLMException):
+                raise
             raise LeoLLMException(f"LLM chat completion failed: {str(e)}")

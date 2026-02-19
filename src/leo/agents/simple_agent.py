@@ -1,8 +1,7 @@
 import json
-from typing import Any
 
-from ..core.llm import LeoLLMClient
-from ..tools.registry import ToolsRegistry, ToolsRegistryError
+from ..core.llm import LeoLLMClient, LeoLLMException
+from ..tools.registry import ToolsRegistry
 from .agent import Agent
 
 SIMPLE_AGENT_SYSTEM_PROMPT_BASE = """
@@ -50,39 +49,38 @@ class SimpleAgent(Agent):
             {"role": "user", "content": user_input},
         ]
 
-        current_iteration = 0
-        while current_iteration < max_iterations:
-            current_iteration += 1
-            response = self.llm.invoke(
-                messages=messages,
-                tools=self.tools_registry.get_tool_schemas(),
-            )
+        tools = self.tools_registry.get_tool_schemas()
+        conversation = list(messages)
 
-            tool_calls = response.tool_calls or []
+        for _ in range(max_iterations):
+            assistant_message = self.llm.complete(messages=conversation, tools=tools)
+            tool_calls = assistant_message.tool_calls or []
+
             if not tool_calls:
-                return response.content or ""
+                return assistant_message.content or ""
 
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": response.content or "",
-                "tool_calls": [tool_call.model_dump() for tool_call in tool_calls],
-            }
-            messages.append(assistant_message)
+            conversation.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [tool_call.model_dump() for tool_call in tool_calls],
+                }
+            )
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments or "{}")
                 try:
                     result = self.tools_registry.execute(tool_name, **tool_args)
-                except (ToolsRegistryError, TypeError, ValueError) as exc:
+                except Exception as exc:
                     result = f"Tool execution failed for {tool_name}: {exc}"
 
-                tool_content = result if isinstance(result, str) else json.dumps(result)
-                messages.append(
+                conversation.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": tool_content,
+                        "content": result if isinstance(result, str) else json.dumps(result),
                     }
                 )
-        return "Max iterations reached without a final response."
+
+        raise LeoLLMException("Max iterations reached without a final response.")
