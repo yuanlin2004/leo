@@ -83,6 +83,13 @@ def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
     deduped = registry.execute("dedupe_sources", items=items)
     assert len(deduped) == 2
 
+    deduped_via_alias = registry.execute(
+        "execute_skill_action",
+        action_name="dedupe_sources",
+        action_input={"sources": items},
+    )
+    assert len(deduped_via_alias) == 2
+
     recent = registry.execute(
         "filter_by_date",
         items=deduped,
@@ -103,6 +110,17 @@ def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
     )
     assert recency["fresh_count"] == 1
     assert recency["stale_count"] == 1
+
+    recency_via_alias = registry.execute(
+        "execute_skill_action",
+        action_name="validate_recency",
+        action_input={
+            "sources": deduped,
+            "max_age_days": 30,
+            "now_iso": "2026-02-19T00:00:00+00:00",
+        },
+    )
+    assert recency_via_alias["fresh_count"] == 1
 
     resolved = registry.execute(
         "resolve_relative_dates",

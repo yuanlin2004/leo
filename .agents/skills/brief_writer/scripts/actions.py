@@ -49,6 +49,20 @@ def _normalize_findings(findings: list[dict[str, Any]] | str) -> list[dict[str, 
     return normalized
 
 
+def _resolve_findings(
+    *,
+    findings: list[dict[str, Any]] | str | None = None,
+    sources: list[dict[str, Any]] | str | None = None,
+    results: list[dict[str, Any]] | str | None = None,
+    items: list[dict[str, Any]] | str | None = None,
+    data: list[dict[str, Any]] | str | None = None,
+) -> list[dict[str, Any]]:
+    for candidate in (findings, sources, results, items, data):
+        if isinstance(candidate, (list, str)):
+            return _normalize_findings(candidate)
+    return []
+
+
 def _item_score(item: dict[str, Any]) -> float:
     for key in ("relevance_score", "score"):
         try:
@@ -74,8 +88,22 @@ def _format_item_line(item: dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def format_citations(findings: list[dict[str, Any]] | str, max_items: int = 10) -> str:
-    items = _normalize_findings(findings)
+def format_citations(
+    findings: list[dict[str, Any]] | str | None = None,
+    *,
+    sources: list[dict[str, Any]] | str | None = None,
+    results: list[dict[str, Any]] | str | None = None,
+    items: list[dict[str, Any]] | str | None = None,
+    data: list[dict[str, Any]] | str | None = None,
+    max_items: int = 10,
+) -> str:
+    items = _resolve_findings(
+        findings=findings,
+        sources=sources,
+        results=results,
+        items=items,
+        data=data,
+    )
     if not items:
         return "No citations available."
 
@@ -97,10 +125,21 @@ def format_citations(findings: list[dict[str, Any]] | str, max_items: int = 10) 
 
 def build_brief(
     topic: str,
-    findings: list[dict[str, Any]] | str,
+    findings: list[dict[str, Any]] | str | None = None,
+    *,
+    sources: list[dict[str, Any]] | str | None = None,
+    results: list[dict[str, Any]] | str | None = None,
+    items: list[dict[str, Any]] | str | None = None,
+    data: list[dict[str, Any]] | str | None = None,
     max_bullets: int = 5,
 ) -> str:
-    items = _normalize_findings(findings)
+    items = _resolve_findings(
+        findings=findings,
+        sources=sources,
+        results=results,
+        items=items,
+        data=data,
+    )
     if not items:
         return (
             f"# Brief: {topic}\n\n"

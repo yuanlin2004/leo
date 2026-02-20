@@ -77,6 +77,21 @@ def _normalize_item(item: dict[str, Any] | str | Any, index: int) -> dict[str, A
     return normalized
 
 
+def _resolve_items(
+    *,
+    items: list[dict[str, Any] | str] | None = None,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
+) -> list[dict[str, Any] | str]:
+    for candidate in (items, sources, results, findings, documents, data):
+        if isinstance(candidate, list):
+            return candidate
+    return []
+
+
 def _is_better(candidate: dict[str, Any], current: dict[str, Any]) -> bool:
     candidate_score = _to_float(candidate.get("score"), 0.0)
     current_score = _to_float(current.get("score"), 0.0)
@@ -88,10 +103,26 @@ def _is_better(candidate: dict[str, Any], current: dict[str, Any]) -> bool:
     return candidate_len > current_len
 
 
-def dedupe_sources(items: list[dict[str, Any] | str]) -> list[dict[str, Any]]:
+def dedupe_sources(
+    items: list[dict[str, Any] | str] | None = None,
+    *,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
+) -> list[dict[str, Any]]:
+    resolved_items = _resolve_items(
+        items=items,
+        sources=sources,
+        results=results,
+        findings=findings,
+        documents=documents,
+        data=data,
+    )
     deduped: dict[str, dict[str, Any]] = {}
 
-    for idx, item in enumerate(items or []):
+    for idx, item in enumerate(resolved_items):
         normalized = _normalize_item(item, idx)
         url_key = _canonicalize_url(normalized.get("url"))
         title_key = str(normalized.get("title", "")).strip().lower()
@@ -105,18 +136,32 @@ def dedupe_sources(items: list[dict[str, Any] | str]) -> list[dict[str, Any]]:
 
 
 def filter_by_date(
-    items: list[dict[str, Any] | str],
+    items: list[dict[str, Any] | str] | None = None,
+    *,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
     days: int = 14,
     include_undated: bool = False,
     date_fields: list[str] | None = None,
     now_iso: str | None = None,
 ) -> list[dict[str, Any]]:
+    resolved_items = _resolve_items(
+        items=items,
+        sources=sources,
+        results=results,
+        findings=findings,
+        documents=documents,
+        data=data,
+    )
     fields = date_fields or list(_DEFAULT_DATE_FIELDS)
     now = _parse_datetime(now_iso) if now_iso else datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max(0, int(days)))
 
     kept: list[dict[str, Any]] = []
-    for idx, item in enumerate(items or []):
+    for idx, item in enumerate(resolved_items):
         normalized = _normalize_item(item, idx)
 
         parsed_date: datetime | None = None
@@ -137,14 +182,28 @@ def filter_by_date(
 
 
 def rank_by_relevance(
-    items: list[dict[str, Any] | str],
+    items: list[dict[str, Any] | str] | None = None,
+    *,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
     query: str,
     top_k: int = 5,
 ) -> list[dict[str, Any]]:
+    resolved_items = _resolve_items(
+        items=items,
+        sources=sources,
+        results=results,
+        findings=findings,
+        documents=documents,
+        data=data,
+    )
     query_tokens = {token for token in _TOKEN_RE.findall((query or "").lower()) if token}
 
     scored: list[dict[str, Any]] = []
-    for idx, item in enumerate(items or []):
+    for idx, item in enumerate(resolved_items):
         normalized = _normalize_item(item, idx)
         text = " ".join(
             str(normalized.get(key, "")) for key in ("title", "snippet", "summary", "content")

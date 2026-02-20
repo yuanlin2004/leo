@@ -49,6 +49,21 @@ def _week_range(anchor: date) -> tuple[date, date]:
     return start, end
 
 
+def _resolve_items(
+    *,
+    items: list[dict[str, Any] | str] | None = None,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
+) -> list[dict[str, Any] | str]:
+    for candidate in (items, sources, results, findings, documents, data):
+        if isinstance(candidate, list):
+            return candidate
+    return []
+
+
 def resolve_relative_dates(text: str, today: str | None = None) -> str:
     anchor = _parse_date(today)
 
@@ -72,11 +87,25 @@ def resolve_relative_dates(text: str, today: str | None = None) -> str:
 
 
 def validate_recency(
-    items: list[dict[str, Any] | str],
+    items: list[dict[str, Any] | str] | None = None,
+    *,
+    sources: list[dict[str, Any] | str] | None = None,
+    results: list[dict[str, Any] | str] | None = None,
+    findings: list[dict[str, Any] | str] | None = None,
+    documents: list[dict[str, Any] | str] | None = None,
+    data: list[dict[str, Any] | str] | None = None,
     max_age_days: int = 30,
     now_iso: str | None = None,
     date_fields: list[str] | None = None,
 ) -> dict[str, Any]:
+    resolved_items = _resolve_items(
+        items=items,
+        sources=sources,
+        results=results,
+        findings=findings,
+        documents=documents,
+        data=data,
+    )
     now = _parse_datetime(now_iso) if now_iso else datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max(0, int(max_age_days)))
     fields = date_fields or list(_DEFAULT_DATE_FIELDS)
@@ -85,7 +114,7 @@ def validate_recency(
     stale_items: list[dict[str, Any]] = []
     undated_items: list[dict[str, Any]] = []
 
-    for idx, item in enumerate(items or []):
+    for idx, item in enumerate(resolved_items):
         normalized = dict(item) if isinstance(item, dict) else {"title": str(item), "index": idx}
 
         parsed_date: datetime | None = None

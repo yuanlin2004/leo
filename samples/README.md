@@ -39,6 +39,9 @@ Verbose trace logging:
 python samples/react_web_search_e2e.py --log-level TRACE
 ```
 
+`TRACE` output is emitted by the `leo` library (`leo.agents.react_agent`) and shows
+request/response/tool-cycle details.
+
 ## ReAct Multi-Skill News Brief End-to-End
 
 Script: `react_news_brief_e2e.py`
@@ -69,3 +72,6 @@ Verbose trace logging:
 ```bash
 python samples/react_news_brief_e2e.py --log-level TRACE
 ```
+
+`TRACE` output is emitted by the `leo` library (`leo.agents.react_agent`) and shows
+request/response/tool-cycle details.
