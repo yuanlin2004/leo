@@ -33,6 +33,12 @@ python samples/react_web_search_e2e.py \
   --task "Compare latest NVIDIA and AMD AI chip announcements."
 ```
 
+Verbose trace logging:
+
+```bash
+python samples/react_web_search_e2e.py --log-level TRACE
+```
+
 ## ReAct Multi-Skill News Brief End-to-End
 
 Script: `react_news_brief_e2e.py`
@@ -56,4 +62,10 @@ Run:
 python samples/react_news_brief_e2e.py \
   --provider openrouter \
   --model openai/gpt-4o-mini
+```
+
+Verbose trace logging:
+
+```bash
+python samples/react_news_brief_e2e.py --log-level TRACE
 ```

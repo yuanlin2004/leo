@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -17,6 +18,46 @@ from leo import LeoLLMClient
 from leo.agents import ReActAgent
 from leo.tools.registry import ToolsRegistry
 
+TRACE_LEVEL = 5
+
+
+def _configure_logging(level_name: str) -> None:
+    if not hasattr(logging, "TRACE"):
+        setattr(logging, "TRACE", TRACE_LEVEL)
+        logging.addLevelName(TRACE_LEVEL, "TRACE")
+
+    if not hasattr(logging.Logger, "trace"):
+        def trace(self: logging.Logger, message: str, *args: Any, **kwargs: Any) -> None:
+            if self.isEnabledFor(TRACE_LEVEL):
+                self._log(TRACE_LEVEL, message, args, **kwargs)
+
+        logging.Logger.trace = trace  # type: ignore[attr-defined]
+
+    normalized = (level_name or "INFO").strip().upper()
+    level_map = {
+        "TRACE": TRACE_LEVEL,
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    resolved_level = level_map.get(normalized, logging.INFO)
+    logging.basicConfig(
+        level=resolved_level,
+        format="%(message)s",
+        force=True,
+    )
+
+    class _LeoOnlyFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return record.name == "leo" or record.name.startswith("leo.")
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.addFilter(_LeoOnlyFilter())
+    logging.getLogger("leo").setLevel(resolved_level)
+
 
 class TracingLLM:
     """
@@ -24,8 +65,9 @@ class TracingLLM:
     to make the ReAct loop visible when running the sample.
     """
 
-    def __init__(self, inner: LeoLLMClient) -> None:
+    def __init__(self, inner: LeoLLMClient, logger: logging.Logger) -> None:
         self._inner = inner
+        self._logger = logger
         self._turn = 0
         self._color_enabled = sys.stdout.isatty() and not os.getenv("NO_COLOR")
         self._input_color = "\033[94m"
@@ -44,26 +86,32 @@ class TracingLLM:
         tools: list[dict[str, Any]] | None = None,
     ) -> Any:
         self._turn += 1
-        print(self._styled(f"\n[request turn {self._turn} messages]", is_input=True))
-        print(self._styled(json.dumps(messages, indent=2, default=str), is_input=True))
+        self._logger.trace(
+            self._styled(f"\n[request turn {self._turn} messages]", is_input=True)
+        )
+        self._logger.trace(
+            self._styled(json.dumps(messages, indent=2, default=str), is_input=True)
+        )
         response = self._inner.complete(messages=messages, tools=tools)
         content = (response.content or "").strip()
         tool_calls = response.tool_calls or []
 
-        print(self._styled(f"\n[assistant turn {self._turn}]", is_input=False))
+        self._logger.debug(
+            self._styled(f"\n[assistant turn {self._turn}]", is_input=False)
+        )
         if content:
-            print(self._styled(content, is_input=False))
+            self._logger.debug(self._styled(content, is_input=False))
         if tool_calls:
             names = ", ".join(tool_call.function.name for tool_call in tool_calls)
-            print(self._styled(f"[tool calls] {names}", is_input=False))
-        print(
+            self._logger.debug(self._styled(f"[tool calls] {names}", is_input=False))
+        self._logger.trace(
             self._styled(
                 f"\n[assistant turn {self._turn} full response]",
                 is_input=False,
             )
         )
         if hasattr(response, "model_dump"):
-            print(
+            self._logger.trace(
                 self._styled(
                     json.dumps(response.model_dump(), indent=2, default=str),
                     is_input=False,
@@ -80,7 +128,7 @@ class TracingLLM:
                 }
                 for tool_call in tool_calls
             ]
-            print(
+            self._logger.trace(
                 self._styled(
                     json.dumps(
                         {"content": response.content, "tool_calls": serialized_calls},
@@ -133,11 +181,18 @@ def _parse_args() -> argparse.Namespace:
         default=_default_task(),
         help="User task prompt.",
     )
+    parser.add_argument(
+        "--log-level",
+        default=os.getenv("LEO_LOG_LEVEL", "INFO"),
+        help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    _configure_logging(args.log_level)
+    logger = logging.getLogger("leo.samples.react_web_search_e2e")
 
     if not (os.getenv("TAVILY_API_KEY") or os.getenv("TAVILYKEY")):
         raise SystemExit(
@@ -153,7 +208,7 @@ def main() -> None:
         )
 
     llm = LeoLLMClient(model=args.model, provider=args.provider, temperature=0.2)
-    tracing_llm = TracingLLM(llm)
+    tracing_llm = TracingLLM(llm, logger)
     agent = ReActAgent(
         name="react-web-search",
         llm=tracing_llm,
@@ -167,15 +222,15 @@ For this task, explicitly use a multi-step ReAct flow:
 """,
     )
 
-    print("== ReAct E2E Sample ==")
-    print(f"provider={args.provider} model={args.model}")
-    print(f"skills_root={args.skills_root}")
-    print(f"task={args.task}")
+    logger.info("== ReAct E2E Sample ==")
+    logger.info("provider=%s model=%s", args.provider, args.model)
+    logger.info("skills_root=%s", args.skills_root)
+    logger.info("task=%s", args.task)
 
     final_answer = agent.run(args.task, max_iterations=args.max_iterations)
 
-    print("\n[final answer]")
-    print(final_answer)
+    logger.info("\n[final answer]")
+    logger.info("%s", final_answer)
 
 
 if __name__ == "__main__":
