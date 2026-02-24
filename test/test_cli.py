@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 from leo.cli.banner import render_leo_banner
@@ -32,13 +34,26 @@ class FakeSession:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
         self.reset_count = 0
+        self.conversation: list[dict[str, str]] = [
+            {"role": "system", "content": "system prompt"}
+        ]
 
     def send(self, user_input: str, max_iterations: int = 10) -> str:
         self.calls.append((user_input, max_iterations))
-        return f"reply:{user_input}"
+        reply = f"reply:{user_input}"
+        self.conversation.append({"role": "user", "content": user_input})
+        self.conversation.append({"role": "assistant", "content": reply})
+        return reply
 
     def reset(self) -> None:
         self.reset_count += 1
+        self.conversation = [{"role": "system", "content": "system prompt"}]
+
+    def export_conversation(self) -> list[dict[str, str]]:
+        return copy.deepcopy(self.conversation)
+
+    def load_conversation(self, conversation: list[dict[str, str]]) -> None:
+        self.conversation = copy.deepcopy(conversation)
 
 
 class FakeAgent:
@@ -201,3 +216,67 @@ def test_run_chat_shows_banner_by_default() -> None:
     assert code == 0
     assert outputs[0] == render_leo_banner()
     assert outputs[1] == "Leo chat started. Type /help for commands."
+
+
+def test_run_chat_save_and_load_transcript(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    args = parse_args(["chat", "--no-banner"])
+    agent = FakeAgent()
+    outputs: list[str] = []
+    inputs = iter(
+        [
+            "hello",
+            "/save transcript.json",
+            "/reset",
+            "/load transcript.json",
+            "/exit",
+        ]
+    )
+
+    code = run(
+        args,
+        agent_factory=lambda _args: agent,
+        input_fn=lambda _prompt: next(inputs),
+        output_fn=outputs.append,
+    )
+
+    saved_path = tmp_path / "transcript.json"
+    payload = json.loads(saved_path.read_text(encoding="utf-8"))
+
+    assert code == 0
+    assert saved_path.exists()
+    assert payload["schema_version"] == 1
+    assert payload["messages"][-1]["content"] == "reply:hello"
+    assert any("Saved transcript to" in item for item in outputs)
+    assert any("Loaded transcript from" in item for item in outputs)
+    assert agent.session.conversation == payload["messages"]
+
+
+def test_run_chat_save_and_load_errors(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    args = parse_args(["chat", "--no-banner"])
+    agent = FakeAgent()
+    outputs: list[str] = []
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_text('{"messages":"oops"}', encoding="utf-8")
+    inputs = iter(
+        [
+            "/save",
+            "/load",
+            "/load missing.json",
+            "/load bad.json",
+            "/exit",
+        ]
+    )
+
+    code = run(
+        args,
+        agent_factory=lambda _args: agent,
+        input_fn=lambda _prompt: next(inputs),
+        output_fn=outputs.append,
+    )
+
+    assert code == 0
+    assert "Usage: /save <file>" in outputs
+    assert "Usage: /load <file>" in outputs
+    assert any("Failed to load transcript" in item for item in outputs)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 from pathlib import Path
@@ -24,6 +25,8 @@ CHAT_HELP_TEXT = "\n".join(
         "/skill <name> - Load and show details for one skill.",
         "/tools - List currently available tools.",
         "/config - Show active chat configuration.",
+        "/save <file> - Save current conversation transcript.",
+        "/load <file> - Load conversation transcript from disk.",
     ]
 )
 
@@ -181,6 +184,36 @@ def _format_config(args: argparse.Namespace) -> str:
     )
 
 
+def _resolve_path(path_text: str) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def _save_conversation(session: Any, path_text: str) -> Path:
+    conversation = session.export_conversation()
+    payload = {"schema_version": 1, "messages": conversation}
+    path = _resolve_path(path_text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_conversation(session: Any, path_text: str) -> Path:
+    path = _resolve_path(path_text)
+    raw = path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    if isinstance(payload, list):
+        messages = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("messages"), list):
+        messages = payload["messages"]
+    else:
+        raise ValueError("Transcript must be a message list or object with messages.")
+    session.load_conversation(messages)
+    return path
+
+
 def _handle_chat_command(
     user_input: str,
     *,
@@ -225,6 +258,28 @@ def _handle_chat_command(
         return False
     if command == "/config":
         output_fn(_format_config(args))
+        return False
+    if command == "/save":
+        if len(parts) < 2:
+            output_fn("Usage: /save <file>")
+            return False
+        try:
+            saved_path = _save_conversation(session, " ".join(parts[1:]))
+        except Exception as exc:
+            output_fn(f"Failed to save transcript: {exc}")
+        else:
+            output_fn(f"Saved transcript to {saved_path}")
+        return False
+    if command == "/load":
+        if len(parts) < 2:
+            output_fn("Usage: /load <file>")
+            return False
+        try:
+            loaded_path = _load_conversation(session, " ".join(parts[1:]))
+        except Exception as exc:
+            output_fn(f"Failed to load transcript: {exc}")
+        else:
+            output_fn(f"Loaded transcript from {loaded_path}")
         return False
 
     output_fn(f"Unknown command: {parts[0]}. Type /help.")
