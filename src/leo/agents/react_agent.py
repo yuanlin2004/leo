@@ -7,6 +7,7 @@ from ..core.logging_utils import TRACE_LEVEL
 from ..core.llm import LeoLLMClient, LeoLLMException
 from ..tools.registry import ToolsRegistry
 from .agent import Agent
+from .session import AgentSession
 
 LOGGER = logging.getLogger("leo.agents.react_agent")
 
@@ -124,11 +125,14 @@ class ReActAgent(Agent):
                 summary[key] = f"<{type(value).__name__}>"
         return summary
 
-    def run(self, user_input: str, max_iterations: int = 10) -> str:
-        conversation = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_input},
-        ]
+    def _run_loop(
+        self,
+        conversation: list[dict[str, Any]],
+        max_iterations: int,
+    ) -> str:
+        user_input = ""
+        if conversation:
+            user_input = str(conversation[-1].get("content") or "")
         action_counts: dict[str, int] = {}
         LOGGER.info(
             "Run start: agent=%s max_iterations=%d user_input=%s",
@@ -196,6 +200,7 @@ class ReActAgent(Agent):
             )
 
             if not tool_calls:
+                conversation.append({"role": "assistant", "content": assistant_content})
                 final_answer = self._extract_final_answer(assistant_content)
                 if final_answer:
                     LOGGER.info("Returning final answer after %d turns.", iteration + 1)
@@ -297,3 +302,13 @@ class ReActAgent(Agent):
 
         LOGGER.error("Max iterations reached without a final response.")
         raise LeoLLMException("Max iterations reached without a final response.")
+
+    def run(self, user_input: str, max_iterations: int = 10) -> str:
+        conversation = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_input},
+        ]
+        return self._run_loop(conversation, max_iterations)
+
+    def create_session(self) -> AgentSession:
+        return AgentSession(system_prompt=self.system_prompt, run_loop=self._run_loop)

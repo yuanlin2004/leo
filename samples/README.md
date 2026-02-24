@@ -17,6 +17,7 @@ This sample demonstrates a multi-step ReAct flow with tool use:
 - `openai` and `tavily-python` installed
 - `TAVILY_API_KEY` (or `TAVILYKEY`) set
 - LLM provider credentials set (for example `OPENROUTER_API_KEY`)
+- Optional: put keys in a `.env` file at the repo root
 
 ### Run
 

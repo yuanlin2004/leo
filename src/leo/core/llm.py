@@ -1,6 +1,8 @@
 import os
 from typing import Any, Callable, Literal, Optional
 
+from .env import load_project_env
+
 # Keep this one simple for now. Customized for one provider and one model is fine. 
 
 SUPPORTED_PROVIDERS = Literal[
@@ -39,6 +41,8 @@ class LeoLLMClient:
         self._max_tokens = max_tokens
         self._timeout = timeout
         self._kwargs = kwargs
+
+        load_project_env()
 
         if self._provider == "openrouter":
             api_key = os.getenv("OPENROUTER_API_KEY")

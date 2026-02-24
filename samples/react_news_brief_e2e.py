@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
 from leo import LeoLLMClient
 from leo.agents import ReActAgent
 from leo.core import configure_leo_logging
+from leo.core.env import load_project_env
 from leo.tools.registry import ToolsRegistry
 
 
@@ -26,6 +27,7 @@ def _default_task() -> str:
 
 
 def _parse_args() -> argparse.Namespace:
+    load_project_env()
     parser = argparse.ArgumentParser(
         description=(
             "End-to-end ReAct sample chaining web_search, source_normalizer, "

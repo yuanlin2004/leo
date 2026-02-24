@@ -67,6 +67,21 @@ def test_registry_lazy_loads_skill_details_and_actions(tmp_path: Path) -> None:
     assert result == "echo:x"
 
 
+def test_registry_execute_skill_action_allows_direct_kwargs(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_skill(skills_root)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+    registry.get_skill_details("echo_skill")
+
+    result = registry.execute(
+        "execute_skill_action",
+        action_name="echo_action",
+        query="x",
+    )
+    assert result == "echo:x"
+
+
 def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
     skills_root = Path.cwd() / ".agents" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Literal
 
+from leo.core.env import load_project_env
+
 
 class WebSearchError(Exception):
     pass
@@ -15,6 +17,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 def _resolve_tavily_api_key(api_key: str | None) -> str:
+    load_project_env()
     resolved_key = api_key or os.getenv("TAVILY_API_KEY") or os.getenv("TAVILYKEY")
     if not resolved_key:
         raise WebSearchError(

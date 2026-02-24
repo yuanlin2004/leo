@@ -2,6 +2,9 @@
 name = "leo"
 version="0.01"
 
+[project.scripts]
+leo = "leo.cli.main:main"
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "tsimple_agent.py", "treact_agent.py"]
 pythonpath = ["src"]

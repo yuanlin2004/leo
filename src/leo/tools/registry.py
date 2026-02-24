@@ -65,7 +65,10 @@ class ToolsRegistry:
         )
         self.register_tool(
             name="execute_skill_action",
-            description="Execute a loaded skill action by name with JSON object input.",
+            description=(
+                "Execute a loaded skill action by name. "
+                "Pass args in action_input, or as direct fields."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -79,11 +82,30 @@ class ToolsRegistry:
                     },
                 },
                 "required": ["action_name"],
+                "additionalProperties": True,
             },
-            handler=lambda action_name, action_input=None: self.execute_skill_action(
-                action_name=action_name,
-                action_input=action_input,
-            ),
+            handler=self._execute_skill_action_tool,
+        )
+
+    def _execute_skill_action_tool(
+        self,
+        action_name: str,
+        action_input: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        merged_input: dict[str, Any] = {}
+
+        if action_input is not None:
+            if not isinstance(action_input, dict):
+                raise ToolsRegistryError("action_input must be a JSON object.")
+            merged_input.update(action_input)
+
+        if kwargs:
+            merged_input.update(kwargs)
+
+        return self.execute_skill_action(
+            action_name=action_name,
+            action_input=merged_input or None,
         )
 
     @staticmethod

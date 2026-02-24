@@ -4,6 +4,7 @@ from typing import Any
 from ..core.llm import LeoLLMClient, LeoLLMException
 from ..tools.registry import ToolsRegistry
 from .agent import Agent
+from .session import AgentSession
 
 SIMPLE_AGENT_SYSTEM_PROMPT_BASE = """
 You are a helpful assistant that can answer questions and perform tasks using available tools. 
@@ -62,27 +63,25 @@ class SimpleAgent(Agent):
             + "\n...[truncated to keep context window manageable]"
         )
 
-
-    def run(self, user_input: str, max_iterations: int = 10) -> str:
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_input},
-        ]
-
-        conversation = list(messages)
-
+    def _run_loop(
+        self,
+        conversation: list[dict[str, Any]],
+        max_iterations: int,
+    ) -> str:
         for _ in range(max_iterations):
             tools = self.tools_registry.get_tool_schemas()
             assistant_message = self.llm.complete(messages=conversation, tools=tools)
             tool_calls = assistant_message.tool_calls or []
+            assistant_content = assistant_message.content or ""
 
             if not tool_calls:
-                return assistant_message.content or ""
+                conversation.append({"role": "assistant", "content": assistant_content})
+                return assistant_content
 
             conversation.append(
                 {
                     "role": "assistant",
-                    "content": assistant_message.content or "",
+                    "content": assistant_content,
                     "tool_calls": [tool_call.model_dump() for tool_call in tool_calls],
                 }
             )
@@ -109,4 +108,15 @@ class SimpleAgent(Agent):
                 )
 
         raise LeoLLMException("Max iterations reached without a final response.")
+
+    def run(self, user_input: str, max_iterations: int = 10) -> str:
+        conversation = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_input},
+        ]
+        return self._run_loop(conversation, max_iterations)
+
+    def create_session(self) -> AgentSession:
+        return AgentSession(system_prompt=self.system_prompt, run_loop=self._run_loop)
+
     _MAX_TOOL_OUTPUT_CHARS = 4000
