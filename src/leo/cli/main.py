@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from leo import LeoLLMClient
 from leo.agents import ReActAgent, SimpleAgent
+from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
 from leo.core.env import load_project_env
 from leo.tools.registry import ToolsRegistry
+
+
+CHAT_HELP_TEXT = "\n".join(
+    [
+        "Available chat commands:",
+        "/help - Show this help.",
+        "/exit or /quit - Exit chat.",
+        "/reset - Clear current conversation state.",
+        "/skills - List discovered skills.",
+        "/skill <name> - Load and show details for one skill.",
+        "/tools - List currently available tools.",
+        "/config - Show active chat configuration.",
+    ]
+)
 
 
 def _add_shared_options(parser: argparse.ArgumentParser) -> None:
@@ -76,6 +92,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "chat", help="Start an interactive multi-turn chat session."
     )
     _add_shared_options(chat_parser)
+    chat_parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Skip banner output when chat starts.",
+    )
 
     return parser.parse_args(argv)
 
@@ -104,6 +125,112 @@ def run_ask(
     return 0
 
 
+def _format_skills(agent: Any) -> str:
+    registry = getattr(agent, "tools_registry", None)
+    if registry is None:
+        return "Skills are not available for this agent."
+
+    skills = registry.list_available_skills()
+    if not skills:
+        return "No skills found."
+
+    lines = ["Discovered skills:"]
+    for item in skills:
+        name = item.get("name", "")
+        description = item.get("description", "")
+        lines.append(f"- {name}: {description}")
+    return "\n".join(lines)
+
+
+def _format_skill_details(agent: Any, skill_name: str) -> str:
+    registry = getattr(agent, "tools_registry", None)
+    if registry is None:
+        return "Skills are not available for this agent."
+
+    return registry.get_skill_details(skill_name)
+
+
+def _format_tools(agent: Any) -> str:
+    registry = getattr(agent, "tools_registry", None)
+    if registry is None:
+        return "Tools are not available for this agent."
+
+    tools = registry.get_all_tools()
+    if not tools:
+        return "No tools available."
+
+    lines = ["Available tools:"]
+    for name in sorted(tools):
+        lines.append(f"- {name}: {tools[name]}")
+    return "\n".join(lines)
+
+
+def _format_config(args: argparse.Namespace) -> str:
+    return "\n".join(
+        [
+            "Active configuration:",
+            f"- command: {args.command}",
+            f"- agent: {args.agent}",
+            f"- provider: {args.provider}",
+            f"- model: {args.model}",
+            f"- temperature: {args.temperature}",
+            f"- max_iterations: {args.max_iterations}",
+            f"- skills_root: {args.skills_root}",
+            f"- log_level: {args.log_level}",
+        ]
+    )
+
+
+def _handle_chat_command(
+    user_input: str,
+    *,
+    agent: Any,
+    session: Any,
+    args: argparse.Namespace,
+    output_fn: Callable[[str], None],
+) -> bool:
+    try:
+        parts = shlex.split(user_input)
+    except ValueError as exc:
+        output_fn(f"Invalid command syntax: {exc}")
+        return False
+
+    if not parts:
+        return False
+
+    command = parts[0].lower()
+    if command in {"/exit", "/quit"}:
+        return True
+    if command == "/help":
+        output_fn(CHAT_HELP_TEXT)
+        return False
+    if command == "/reset":
+        session.reset()
+        output_fn("Conversation reset.")
+        return False
+    if command == "/skills":
+        output_fn(_format_skills(agent))
+        return False
+    if command == "/skill":
+        if len(parts) < 2:
+            output_fn("Usage: /skill <name>")
+            return False
+        try:
+            output_fn(_format_skill_details(agent, parts[1]))
+        except Exception as exc:
+            output_fn(f"Failed to load skill '{parts[1]}': {exc}")
+        return False
+    if command == "/tools":
+        output_fn(_format_tools(agent))
+        return False
+    if command == "/config":
+        output_fn(_format_config(args))
+        return False
+
+    output_fn(f"Unknown command: {parts[0]}. Type /help.")
+    return False
+
+
 def run_chat(
     agent: Any,
     args: argparse.Namespace,
@@ -112,7 +239,9 @@ def run_chat(
     output_fn: Callable[[str], None] = print,
 ) -> int:
     session = agent.create_session()
-    output_fn("Leo chat started. Type /exit to quit.")
+    if not args.no_banner:
+        output_fn(render_leo_banner())
+    output_fn("Leo chat started. Type /help for commands.")
 
     while True:
         try:
@@ -123,8 +252,17 @@ def run_chat(
 
         if not user_input:
             continue
-        if user_input.lower() in {"/exit", "/quit"}:
-            return 0
+        if user_input.startswith("/"):
+            should_exit = _handle_chat_command(
+                user_input,
+                agent=agent,
+                session=session,
+                args=args,
+                output_fn=output_fn,
+            )
+            if should_exit:
+                return 0
+            continue
 
         answer = session.send(user_input, max_iterations=args.max_iterations)
         output_fn(f"leo> {answer}")
