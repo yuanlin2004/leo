@@ -36,7 +36,7 @@ class ToolsRegistry:
         self._skills_root = Path(skills_root) if skills_root else None
 
         self._register_meta_tools()
-        self.refresh_skills_index()
+        self._refresh_skills_index()
 
     def _register_meta_tools(self) -> None:
         self.register_tool(
@@ -181,7 +181,7 @@ class ToolsRegistry:
                 roots.append(candidate)
         return roots
 
-    def refresh_skills_index(self) -> None:
+    def _refresh_skills_index(self) -> None:
         self._skills = {}
         for root in self._candidate_skill_roots():
             for skill_md in sorted(root.glob("*/SKILL.md")):
