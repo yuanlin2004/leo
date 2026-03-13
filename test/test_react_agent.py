@@ -182,3 +182,64 @@ def test_react_agent_uses_web_search_skill_with_lazy_load_real() -> None:
 
     assert result == "done"
     assert "web_search" in registry._loaded_actions
+
+
+def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFixture) -> None:
+    def lookup(query: str) -> str:
+        return f"obs:{query}"
+
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="lookup",
+        description="Lookup data.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=lookup,
+    )
+
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "Thought: need data",
+                "tool_calls": [
+                    FakeToolCall("call-1", "lookup", json.dumps({"query": "a"})),
+                ],
+            },
+            {"content": "Final Answer: done"},
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    with caplog.at_level("INFO", logger="leo.agents.react_agent"):
+        result = agent.run("do thing", max_iterations=4)
+
+    assert result == "done"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message == "Turn 1: calling model" for message in messages)
+    assert any(
+        "Turn 1: model responded" in message
+        and "tool_calls=1" in message
+        and "content=Thought: need data" in message
+        for message in messages
+    )
+    assert any(message == "Turn 1: tool plan=lookup" for message in messages)
+    assert any(
+        "Turn 1: executing tool=lookup" in message
+        and "args={'query': 'a'}" in message
+        and "attempt=1" in message
+        for message in messages
+    )
+    assert any(
+        "Turn 1: tool completed id=call-1 name=lookup" in message
+        and "result=obs:a" in message
+        for message in messages
+    )
+    assert any(
+        "Turn 2: final answer detected preview=done" in message for message in messages
+    )
+    assert any(
+        message == "Returning final answer after 2 turns." for message in messages
+    )

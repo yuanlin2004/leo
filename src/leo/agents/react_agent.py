@@ -125,6 +125,13 @@ class ReActAgent(Agent):
                 summary[key] = f"<{type(value).__name__}>"
         return summary
 
+    @staticmethod
+    def _summarize_tool_names(tool_calls: list[Any]) -> str:
+        names = [tool_call.function.name for tool_call in tool_calls]
+        if not names:
+            return "-"
+        return ", ".join(names)
+
     def _run_loop(
         self,
         conversation: list[dict[str, Any]],
@@ -142,11 +149,13 @@ class ReActAgent(Agent):
         )
 
         for iteration in range(max_iterations):
+            turn_number = iteration + 1
+            LOGGER.info("Turn %d: calling model", turn_number)
             tools = self.tools_registry.get_tool_schemas()
             LOGGER.log(
                 TRACE_LEVEL,
                 "[request turn %d messages]\n%s",
-                iteration + 1,
+                turn_number,
                 json.dumps(conversation, indent=2, default=str),
             )
             llm_start = time.perf_counter()
@@ -154,21 +163,33 @@ class ReActAgent(Agent):
             llm_elapsed_ms = (time.perf_counter() - llm_start) * 1000
             tool_calls = assistant_message.tool_calls or []
             assistant_content = assistant_message.content or ""
+            LOGGER.info(
+                "Turn %d: model responded latency_ms=%.1f tool_calls=%d content=%s",
+                turn_number,
+                llm_elapsed_ms,
+                len(tool_calls),
+                self._preview_text(assistant_content),
+            )
             LOGGER.debug(
                 "Turn %d: llm_latency_ms=%.1f tool_calls=%d",
-                iteration + 1,
+                turn_number,
                 llm_elapsed_ms,
                 len(tool_calls),
             )
             LOGGER.debug(
                 "[assistant turn %d] %s",
-                iteration + 1,
+                turn_number,
                 self._preview_text(assistant_content),
             )
             if tool_calls:
+                LOGGER.info(
+                    "Turn %d: tool plan=%s",
+                    turn_number,
+                    self._summarize_tool_names(tool_calls),
+                )
                 LOGGER.debug(
                     "[assistant turn %d tool calls] %s",
-                    iteration + 1,
+                    turn_number,
                     ", ".join(tool_call.function.name for tool_call in tool_calls),
                 )
             response_payload = (
@@ -195,7 +216,7 @@ class ReActAgent(Agent):
             LOGGER.log(
                 TRACE_LEVEL,
                 "[assistant turn %d full response]\n%s",
-                iteration + 1,
+                turn_number,
                 json.dumps(response_payload, indent=2, default=str),
             )
 
@@ -203,12 +224,22 @@ class ReActAgent(Agent):
                 conversation.append({"role": "assistant", "content": assistant_content})
                 final_answer = self._extract_final_answer(assistant_content)
                 if final_answer:
-                    LOGGER.info("Returning final answer after %d turns.", iteration + 1)
+                    LOGGER.info(
+                        "Turn %d: final answer detected preview=%s",
+                        turn_number,
+                        self._preview_text(final_answer),
+                    )
+                    LOGGER.info("Returning final answer after %d turns.", turn_number)
                     LOGGER.debug(
                         "Final answer preview: %s", self._preview_text(final_answer)
                     )
                     return final_answer
-                LOGGER.info("Returning assistant content after %d turns.", iteration + 1)
+                LOGGER.info(
+                    "Turn %d: returning assistant content preview=%s",
+                    turn_number,
+                    self._preview_text(assistant_content),
+                )
+                LOGGER.info("Returning assistant content after %d turns.", turn_number)
                 LOGGER.debug(
                     "Assistant content preview: %s",
                     self._preview_text(assistant_content),
@@ -247,6 +278,13 @@ class ReActAgent(Agent):
                     )
                     action_key = self._build_action_key(tool_name, tool_args)
                     action_counts[action_key] = action_counts.get(action_key, 0) + 1
+                    LOGGER.info(
+                        "Turn %d: executing tool=%s args=%s attempt=%d",
+                        turn_number,
+                        tool_name,
+                        self._summarize_args(tool_args),
+                        action_counts[action_key],
+                    )
                     if action_counts[action_key] > self._MAX_REPEAT_ACTIONS:
                         LOGGER.warning(
                             "Skipping repeated tool action: %s args=%s",
@@ -278,6 +316,14 @@ class ReActAgent(Agent):
                             )
                 call_elapsed_ms = (time.perf_counter() - call_start) * 1000
                 formatted_result = self._format_tool_result(result)
+                LOGGER.info(
+                    "Turn %d: tool completed id=%s name=%s latency_ms=%.1f result=%s",
+                    turn_number,
+                    tool_call.id,
+                    tool_name,
+                    call_elapsed_ms,
+                    self._preview_text(formatted_result),
+                )
                 LOGGER.debug(
                     "Tool completed: id=%s name=%s latency_ms=%.1f",
                     tool_call.id,

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -11,9 +12,13 @@ from leo import LeoLLMClient
 from leo.agents import ReActAgent, SimpleAgent
 from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
+from leo.core.logging_utils import resolve_log_level
 from leo.core.env import load_project_env
 from leo.tools.registry import ToolsRegistry
 
+VALID_LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+COMMAND_NAMES = {"ask", "chat"}
+HELP_FLAGS = {"-h", "--help"}
 
 CHAT_HELP_TEXT = "\n".join(
     [
@@ -25,6 +30,7 @@ CHAT_HELP_TEXT = "\n".join(
         "/skill <name> - Load and show details for one skill.",
         "/tools - List currently available tools.",
         "/config - Show active chat configuration.",
+        "/log-level <level> - Change logging level for this chat session.",
         "/save <file> - Save current conversation transcript.",
         "/load <file> - Load conversation transcript from disk.",
     ]
@@ -74,6 +80,11 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     load_project_env()
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        raw_argv = ["chat"]
+    elif raw_argv[0] not in COMMAND_NAMES and raw_argv[0] not in HELP_FLAGS:
+        raw_argv.insert(0, "chat")
 
     parser = argparse.ArgumentParser(
         prog="leo",
@@ -101,7 +112,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip banner output when chat starts.",
     )
 
-    return parser.parse_args(argv)
+    return parser.parse_args(raw_argv)
 
 
 def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
@@ -184,6 +195,20 @@ def _format_config(args: argparse.Namespace) -> str:
     )
 
 
+def _set_log_level(args: argparse.Namespace, level_name: str) -> str:
+    normalized = (level_name or "").strip().upper()
+    if normalized not in VALID_LOG_LEVELS:
+        valid_levels = ", ".join(VALID_LOG_LEVELS)
+        raise ValueError(
+            f"Invalid log level: {level_name}. Expected one of {valid_levels}."
+        )
+
+    configure_leo_logging(normalized, leo_only=True)
+    args.log_level = normalized
+    resolved_level = resolve_log_level(normalized)
+    return f"Log level set to {normalized} ({resolved_level})."
+
+
 def _resolve_path(path_text: str) -> Path:
     path = Path(path_text).expanduser()
     if not path.is_absolute():
@@ -258,6 +283,15 @@ def _handle_chat_command(
         return False
     if command == "/config":
         output_fn(_format_config(args))
+        return False
+    if command == "/log-level":
+        if len(parts) < 2:
+            output_fn("Usage: /log-level <level>")
+            return False
+        try:
+            output_fn(_set_log_level(args, parts[1]))
+        except Exception as exc:
+            output_fn(str(exc))
         return False
     if command == "/save":
         if len(parts) < 2:

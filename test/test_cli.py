@@ -78,6 +78,21 @@ def test_parse_args_for_ask_command() -> None:
     assert args.max_iterations == 10
 
 
+def test_parse_args_defaults_to_chat_without_subcommand() -> None:
+    args = parse_args([])
+
+    assert args.command == "chat"
+    assert args.no_banner is False
+
+
+def test_parse_args_defaults_to_chat_for_chat_options() -> None:
+    args = parse_args(["--no-banner", "--agent", "simple"])
+
+    assert args.command == "chat"
+    assert args.no_banner is True
+    assert args.agent == "simple"
+
+
 def test_parse_args_loads_dotenv_defaults(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("LEO_MODEL=from-dotenv-model\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -125,6 +140,23 @@ def test_run_chat_sends_messages_until_exit() -> None:
     ]
 
 
+def test_run_defaults_to_chat_without_subcommand() -> None:
+    args = parse_args(["--no-banner"])
+    agent = FakeAgent()
+    outputs: list[str] = []
+    inputs = iter(["/exit"])
+
+    code = run(
+        args,
+        agent_factory=lambda _args: agent,
+        input_fn=lambda _prompt: next(inputs),
+        output_fn=outputs.append,
+    )
+
+    assert code == 0
+    assert outputs == ["Leo chat started. Type /help for commands."]
+
+
 def test_run_chat_commands_work() -> None:
     args = parse_args(
         [
@@ -154,6 +186,7 @@ def test_run_chat_commands_work() -> None:
             "/skills",
             "/skill web_search",
             "/tools",
+            "/log-level trace",
             "/config",
             "/reset",
             "hello",
@@ -176,7 +209,9 @@ def test_run_chat_commands_work() -> None:
     assert any("Discovered skills:" in item for item in outputs)
     assert any("Skill: web_search" in item for item in outputs)
     assert any("Available tools:" in item for item in outputs)
+    assert any("Log level set to TRACE" in item for item in outputs)
     assert any("Active configuration:" in item for item in outputs)
+    assert any("- log_level: TRACE" in item for item in outputs)
     assert any("Conversation reset." == item for item in outputs)
     assert any("leo> reply:hello" == item for item in outputs)
 
@@ -185,7 +220,9 @@ def test_run_chat_command_errors() -> None:
     args = parse_args(["chat", "--no-banner"])
     agent = FakeAgent()
     outputs: list[str] = []
-    inputs = iter(["/skill", "/skill missing", "/unknown", "/exit"])
+    inputs = iter(
+        ["/skill", "/skill missing", "/log-level", "/log-level noisy", "/unknown", "/exit"]
+    )
 
     code = run(
         args,
@@ -197,6 +234,8 @@ def test_run_chat_command_errors() -> None:
     assert code == 0
     assert any("Usage: /skill <name>" == item for item in outputs)
     assert any("Failed to load skill 'missing'" in item for item in outputs)
+    assert any("Usage: /log-level <level>" == item for item in outputs)
+    assert any("Invalid log level: noisy." in item for item in outputs)
     assert any("Unknown command: /unknown. Type /help." == item for item in outputs)
 
 

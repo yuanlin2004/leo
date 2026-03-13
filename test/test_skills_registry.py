@@ -174,3 +174,22 @@ def test_registry_executes_brief_writer_actions() -> None:
 
     citations = registry.execute("format_citations", findings=findings, max_items=2)
     assert "https://example.com/model" in citations
+
+
+def test_registry_executes_current_time_actions() -> None:
+    skills_root = Path.cwd() / ".agents" / "skills"
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    registry.get_skill_details("current_time")
+
+    current = registry.execute(
+        "get_current_time",
+        timezone_name="America/New_York",
+        now_iso="2026-03-13T12:34:56+00:00",
+    )
+
+    assert current["timezone"] == "America/New_York"
+    assert current["weekday"] == "Friday"
+    assert current["date"] == "2026-03-13"
+    assert current["time"] == "08:34:56"
+    assert current["iso"] == "2026-03-13T08:34:56-04:00"
