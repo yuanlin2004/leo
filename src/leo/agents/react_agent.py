@@ -17,13 +17,14 @@ You operate in iterative steps:
 1) Think briefly about what is needed.
 2) If external facts are needed, call one or more tools.
 3) Read the observation and decide the next step.
-4) When done, respond with: Final Answer: <answer>
+4) When done, call the `final_answer` tool with the complete user-facing answer in its
+   `answer` field. Do not put any draft, recap, status line, or other text outside that tool call.
 
 Rules:
 - Prefer tool use for uncertain or time-sensitive facts.
 - Do not call the same tool with the same arguments repeatedly unless new evidence justifies it.
 - Keep intermediate reasoning short and practical.
-- Final answer must be clear, user-facing, and concise.
+- Final answer must be clear and user-facing. For writing tasks, include the full deliverable in `final_answer.answer`.
 - If you suspect a skill may help, call list_available_skills first to discover options, then call get_skill_details before using any skill action.
 """
 
@@ -36,6 +37,27 @@ class ReActAgent(Agent):
     _MAX_REPEAT_ACTIONS = 2
     _MAX_TOOL_OUTPUT_CHARS = 4000
     _MAX_LOG_PREVIEW_CHARS = 200
+    _FINAL_ANSWER_TOOL_NAME = "final_answer"
+    _FINAL_ANSWER_TOOL_SCHEMA = {
+        "type": "function",
+        "function": {
+            "name": _FINAL_ANSWER_TOOL_NAME,
+            "description": "Return the complete final answer to the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "answer": {
+                        "type": "string",
+                        "description": (
+                            "The complete, user-facing final answer. "
+                            "For drafting tasks, include the full draft body here."
+                        ),
+                    }
+                },
+                "required": ["answer"],
+            },
+        },
+    }
 
     def __init__(
         self,
@@ -70,6 +92,23 @@ class ReActAgent(Agent):
             idx = lower.rfind(marker)
             return text[idx + len(marker) :].strip() or None
         return None
+
+    @classmethod
+    def _build_tool_schemas(cls, tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [*tool_schemas, cls._FINAL_ANSWER_TOOL_SCHEMA]
+
+    @classmethod
+    def _extract_final_answer_from_tool_call(cls, tool_call: Any) -> str | None:
+        if tool_call.function.name != cls._FINAL_ANSWER_TOOL_NAME:
+            return None
+        parsed_args = cls._parse_tool_args(tool_call.function.arguments)
+        answer = parsed_args.get("answer")
+        if not isinstance(answer, str):
+            raise ValueError("final_answer.answer must be a string.")
+        text = answer.strip()
+        if not text:
+            raise ValueError("final_answer.answer must not be empty.")
+        return text
 
     @staticmethod
     def _parse_tool_args(raw_args: str | None) -> dict[str, Any]:
@@ -151,7 +190,7 @@ class ReActAgent(Agent):
         for iteration in range(max_iterations):
             turn_number = iteration + 1
             LOGGER.info("Turn %d: calling model", turn_number)
-            tools = self.tools_registry.get_tool_schemas()
+            tools = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
             LOGGER.log(
                 TRACE_LEVEL,
                 "[request turn %d messages]\n%s",
@@ -220,12 +259,39 @@ class ReActAgent(Agent):
                 json.dumps(response_payload, indent=2, default=str),
             )
 
+            if (
+                len(tool_calls) == 1
+                and tool_calls[0].function.name == self._FINAL_ANSWER_TOOL_NAME
+            ):
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_content,
+                        "tool_calls": [tool_calls[0].model_dump()],
+                    }
+                )
+                final_answer = self._extract_final_answer_from_tool_call(tool_calls[0])
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_calls[0].id,
+                        "content": final_answer,
+                    }
+                )
+                LOGGER.info(
+                    "Turn %d: final answer tool received preview=%s",
+                    turn_number,
+                    self._preview_text(final_answer),
+                )
+                LOGGER.info("Returning final answer after %d turns.", turn_number)
+                return final_answer
+
             if not tool_calls:
                 conversation.append({"role": "assistant", "content": assistant_content})
                 final_answer = self._extract_final_answer(assistant_content)
                 if final_answer:
                     LOGGER.info(
-                        "Turn %d: final answer detected preview=%s",
+                        "Turn %d: final answer detected from text preview=%s",
                         turn_number,
                         self._preview_text(final_answer),
                     )

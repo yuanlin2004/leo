@@ -60,6 +60,105 @@ def test_react_agent_executes_all_tool_calls_in_a_step_and_extracts_final_answer
     assert called == [("lookup", "a"), ("other", "")]
 
 
+def test_react_agent_returns_structured_final_answer_tool_payload() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final",
+                        "final_answer",
+                        json.dumps(
+                            {
+                                "answer": (
+                                    "**Monta Vista-Lynbrook Winter Guard Recap**\n"
+                                    "The February 28, 2026 event showcased strong performances."
+                                )
+                            }
+                        ),
+                    )
+                ],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("draft a recap", max_iterations=2)
+
+    assert result == (
+        "**Monta Vista-Lynbrook Winter Guard Recap**\n"
+        "The February 28, 2026 event showcased strong performances."
+    )
+
+
+def test_react_agent_session_persists_structured_final_answer_for_follow_ups() -> None:
+    class RecordingLLM(FakeLLM):
+        def __init__(self, responses: list[dict[str, object]]):
+            super().__init__(responses)
+            self.calls: list[list[dict[str, object]]] = []
+
+        def complete(self, messages, tools=None):
+            self.calls.append(json.loads(json.dumps(messages)))
+            return super().complete(messages=messages, tools=tools)
+
+    llm = RecordingLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final-1",
+                        "final_answer",
+                        json.dumps(
+                            {
+                                "answer": (
+                                    "**Recap**\n"
+                                    "The program name used here is Monta Vista-Lynbrook Winter Guard."
+                                )
+                            }
+                        ),
+                    )
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final-2",
+                        "final_answer",
+                        json.dumps({"answer": "It came from the event title in the source material."}),
+                    )
+                ],
+            },
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=ToolsRegistry())
+    session = agent.create_session()
+
+    first = session.send("Draft a recap.", max_iterations=2)
+    second = session.send("Where did you get the name of the program?", max_iterations=2)
+
+    assert first == (
+        "**Recap**\n"
+        "The program name used here is Monta Vista-Lynbrook Winter Guard."
+    )
+    assert second == "It came from the event title in the source material."
+    second_call_messages = llm.calls[1]
+    assert second_call_messages[-1] == {
+        "role": "user",
+        "content": "Where did you get the name of the program?",
+    }
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_call_id") == "call-final-1"
+        and message.get("content")
+        == "**Recap**\nThe program name used here is Monta Vista-Lynbrook Winter Guard."
+        for message in second_call_messages
+    )
+
+
 def test_react_agent_stops_repeated_same_action() -> None:
     called: list[str] = []
 
@@ -238,8 +337,40 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
         for message in messages
     )
     assert any(
-        "Turn 2: final answer detected preview=done" in message for message in messages
+        "Turn 2: final answer detected from text preview=done" in message
+        for message in messages
     )
     assert any(
         message == "Returning final answer after 2 turns." for message in messages
+    )
+
+
+def test_react_agent_logs_structured_final_answer_tool(caplog: pytest.LogCaptureFixture) -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final",
+                        "final_answer",
+                        json.dumps({"answer": "Draft body here."}),
+                    )
+                ],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    with caplog.at_level("INFO", logger="leo.agents.react_agent"):
+        result = agent.run("draft a recap", max_iterations=2)
+
+    assert result == "Draft body here."
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message == "Turn 1: tool plan=final_answer" for message in messages)
+    assert any(
+        "Turn 1: final answer tool received preview=Draft body here."
+        in message
+        for message in messages
     )
