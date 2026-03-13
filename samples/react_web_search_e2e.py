@@ -30,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
     load_project_env()
     parser = argparse.ArgumentParser(
         description=(
-            "End-to-end ReAct sample using lazy-loaded web_search skill "
+            "End-to-end ReAct sample using activation-based web_search skill "
             "with a multi-step tool flow."
         )
     )
@@ -94,7 +94,7 @@ def main() -> None:
         extra_system_prompt="""
 For this task, explicitly use a multi-step ReAct flow:
 1) Call list_available_skills to discover skills first.
-2) Call get_skill_details with skill_name="web_search".
+2) Call activate_skill with skill_name="web_search".
 3) Call web_search at least two times with different targeted queries.
 4) Then return Final Answer.
 """,

@@ -116,7 +116,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
-    registry = ToolsRegistry(skills_root=args.skills_root)
+    registry = ToolsRegistry(
+        skills_root=args.skills_root,
+        user_skills_root=Path.home() / ".codex" / "skills",
+    )
     llm = LeoLLMClient(
         model=args.model,
         provider=args.provider,
@@ -152,7 +155,9 @@ def _format_skills(agent: Any) -> str:
     for item in skills:
         name = item.get("name", "")
         description = item.get("description", "")
-        lines.append(f"- {name}: {description}")
+        status = "active" if item.get("activated") else "inactive"
+        loadable = "loadable" if item.get("loadable", True) else "invalid"
+        lines.append(f"- {name}: {description} [{status}, {loadable}]")
     return "\n".join(lines)
 
 
@@ -161,7 +166,7 @@ def _format_skill_details(agent: Any, skill_name: str) -> str:
     if registry is None:
         return "Skills are not available for this agent."
 
-    return registry.get_skill_details(skill_name)
+    return registry.describe_skill(skill_name)
 
 
 def _format_tools(agent: Any) -> str:
@@ -216,25 +221,41 @@ def _resolve_path(path_text: str) -> Path:
     return path.resolve()
 
 
-def _save_conversation(session: Any, path_text: str) -> Path:
+def _save_conversation(session: Any, path_text: str, *, agent: Any | None = None) -> Path:
     conversation = session.export_conversation()
-    payload = {"schema_version": 1, "messages": conversation}
+    registry = getattr(agent, "tools_registry", None)
+    activated_skill_ids: list[str] = []
+    if registry is not None and hasattr(registry, "get_activated_skill_ids"):
+        activated_skill_ids = list(registry.get_activated_skill_ids())
+    payload = {
+        "schema_version": 2,
+        "messages": conversation,
+        "activated_skill_ids": activated_skill_ids,
+    }
     path = _resolve_path(path_text)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
 
-def _load_conversation(session: Any, path_text: str) -> Path:
+def _load_conversation(session: Any, path_text: str, *, agent: Any | None = None) -> Path:
     path = _resolve_path(path_text)
     raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
+    activated_skill_ids: list[str] = []
     if isinstance(payload, list):
         messages = payload
     elif isinstance(payload, dict) and isinstance(payload.get("messages"), list):
         messages = payload["messages"]
+        if isinstance(payload.get("activated_skill_ids"), list):
+            activated_skill_ids = [
+                str(item) for item in payload["activated_skill_ids"] if str(item).strip()
+            ]
     else:
         raise ValueError("Transcript must be a message list or object with messages.")
+    registry = getattr(agent, "tools_registry", None)
+    if registry is not None and hasattr(registry, "restore_activated_skills"):
+        registry.restore_activated_skills(activated_skill_ids)
     session.load_conversation(messages)
     return path
 
@@ -298,7 +319,11 @@ def _handle_chat_command(
             output_fn("Usage: /save <file>")
             return False
         try:
-            saved_path = _save_conversation(session, " ".join(parts[1:]))
+            saved_path = _save_conversation(
+                session,
+                " ".join(parts[1:]),
+                agent=agent,
+            )
         except Exception as exc:
             output_fn(f"Failed to save transcript: {exc}")
         else:
@@ -309,7 +334,11 @@ def _handle_chat_command(
             output_fn("Usage: /load <file>")
             return False
         try:
-            loaded_path = _load_conversation(session, " ".join(parts[1:]))
+            loaded_path = _load_conversation(
+                session,
+                " ".join(parts[1:]),
+                agent=agent,
+            )
         except Exception as exc:
             output_fn(f"Failed to load transcript: {exc}")
         else:

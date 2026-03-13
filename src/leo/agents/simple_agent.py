@@ -12,7 +12,8 @@ Always try to use tools if they can help you answer the question or complete the
 If you don't know the answer, use the tools to find it out. 
 Always provide a final answer to the user after using tools, even if you had to use them multiple times. 
 Be concise and clear in your responses.
-If you suspect a skill may help, call list_available_skills first to discover options, then call get_skill_details before using any skill action.
+If a skill may help, call list_available_skills first, then activate_skill before using any tool or bundled resource from that skill.
+If an activated skill points to companion guides, scripts, or reference files, load them with get_skill_resource instead of guessing.
 """
 
 class SimpleAgent(Agent):
@@ -45,6 +46,21 @@ class SimpleAgent(Agent):
     def __str__(self) -> str:
         return f"SimpleAgent(name={self.name})"
 
+    def _build_model_messages(
+        self,
+        conversation: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        protected_context = self.tools_registry.get_protected_skill_context()
+        if not protected_context:
+            return conversation
+        system_message = conversation[0] if conversation else {"role": "system", "content": self.system_prompt}
+        remainder = conversation[1:] if conversation else []
+        return [
+            system_message,
+            {"role": "system", "content": protected_context},
+            *remainder,
+        ]
+
     @staticmethod
     def _parse_tool_args(raw_args: str | None) -> dict[str, Any]:
         if not raw_args:
@@ -70,7 +86,10 @@ class SimpleAgent(Agent):
     ) -> str:
         for _ in range(max_iterations):
             tools = self.tools_registry.get_tool_schemas()
-            assistant_message = self.llm.complete(messages=conversation, tools=tools)
+            assistant_message = self.llm.complete(
+                messages=self._build_model_messages(conversation),
+                tools=tools,
+            )
             tool_calls = assistant_message.tool_calls or []
             assistant_content = assistant_message.content or ""
 
@@ -110,6 +129,7 @@ class SimpleAgent(Agent):
         raise LeoLLMException("Max iterations reached without a final response.")
 
     def run(self, user_input: str, max_iterations: int = 10) -> str:
+        self.tools_registry.reset_session_state()
         conversation = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_input},
@@ -117,6 +137,10 @@ class SimpleAgent(Agent):
         return self._run_loop(conversation, max_iterations)
 
     def create_session(self) -> AgentSession:
-        return AgentSession(system_prompt=self.system_prompt, run_loop=self._run_loop)
+        return AgentSession(
+            system_prompt=self.system_prompt,
+            run_loop=self._run_loop,
+            reset_callback=self.tools_registry.reset_session_state,
+        )
 
     _MAX_TOOL_OUTPUT_CHARS = 4000

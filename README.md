@@ -36,7 +36,7 @@ Save and restore chat state:
 /load transcripts/session.json
 ```
 
-The saved file is JSON with `schema_version` and `messages`.
+The saved file is JSON with `schema_version`, `messages`, and `activated_skill_ids`.
 
 ## Banner
 

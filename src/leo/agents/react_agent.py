@@ -25,7 +25,8 @@ Rules:
 - Do not call the same tool with the same arguments repeatedly unless new evidence justifies it.
 - Keep intermediate reasoning short and practical.
 - Final answer must be clear and user-facing. For writing tasks, include the full deliverable in `final_answer.answer`.
-- If you suspect a skill may help, call list_available_skills first to discover options, then call get_skill_details before using any skill action.
+- If a skill may help, call list_available_skills first and activate_skill before using any tool or bundled resource from that skill.
+- If an activated skill mentions companion guides, scripts, or reference files, load them with get_skill_resource instead of guessing.
 """
 
 
@@ -171,6 +172,25 @@ class ReActAgent(Agent):
             return "-"
         return ", ".join(names)
 
+    def _build_model_messages(
+        self,
+        conversation: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        protected_context = self.tools_registry.get_protected_skill_context()
+        if not protected_context:
+            return conversation
+        system_message = (
+            conversation[0]
+            if conversation
+            else {"role": "system", "content": self.system_prompt}
+        )
+        remainder = conversation[1:] if conversation else []
+        return [
+            system_message,
+            {"role": "system", "content": protected_context},
+            *remainder,
+        ]
+
     def _run_loop(
         self,
         conversation: list[dict[str, Any]],
@@ -191,14 +211,15 @@ class ReActAgent(Agent):
             turn_number = iteration + 1
             LOGGER.info("Turn %d: calling model", turn_number)
             tools = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
+            model_messages = self._build_model_messages(conversation)
             LOGGER.log(
                 TRACE_LEVEL,
                 "[request turn %d messages]\n%s",
                 turn_number,
-                json.dumps(conversation, indent=2, default=str),
+                json.dumps(model_messages, indent=2, default=str),
             )
             llm_start = time.perf_counter()
-            assistant_message = self.llm.complete(messages=conversation, tools=tools)
+            assistant_message = self.llm.complete(messages=model_messages, tools=tools)
             llm_elapsed_ms = (time.perf_counter() - llm_start) * 1000
             tool_calls = assistant_message.tool_calls or []
             assistant_content = assistant_message.content or ""
@@ -369,10 +390,10 @@ class ReActAgent(Agent):
                                 self._summarize_args(tool_args),
                             )
                             result = self.tools_registry.execute(tool_name, **tool_args)
-                            if tool_name == "get_skill_details":
+                            if tool_name == "activate_skill":
                                 skill_name = tool_args.get("skill_name")
                                 if isinstance(skill_name, str) and skill_name:
-                                    LOGGER.info("Loaded skill: %s", skill_name)
+                                    LOGGER.info("Activated skill: %s", skill_name)
                         except Exception as exc:
                             result = f"Tool execution failed for {tool_name}: {exc}"
                             LOGGER.error(
@@ -416,6 +437,7 @@ class ReActAgent(Agent):
         raise LeoLLMException("Max iterations reached without a final response.")
 
     def run(self, user_input: str, max_iterations: int = 10) -> str:
+        self.tools_registry.reset_session_state()
         conversation = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_input},
@@ -423,4 +445,8 @@ class ReActAgent(Agent):
         return self._run_loop(conversation, max_iterations)
 
     def create_session(self) -> AgentSession:
-        return AgentSession(system_prompt=self.system_prompt, run_loop=self._run_loop)
+        return AgentSession(
+            system_prompt=self.system_prompt,
+            run_loop=self._run_loop,
+            reset_callback=self.tools_registry.reset_session_state,
+        )

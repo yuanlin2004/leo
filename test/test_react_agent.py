@@ -1,6 +1,4 @@
 import json
-import os
-from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -240,12 +238,7 @@ def test_react_agent_does_not_treat_different_args_as_repeat() -> None:
     assert called == ["openai news", "anthropic news"]
 
 
-def test_react_agent_uses_web_search_skill_with_lazy_load_real() -> None:
-#    if find_spec("tavily") is None:
-#        pytest.skip("tavily-python is not installed in this environment.")
-#    if not (os.getenv("TAVILY_API_KEY") or os.getenv("TAVILYKEY")):
-#        pytest.skip("Tavily API key is required for a real web_search integration test.")
-
+def test_react_agent_activates_web_search_skill_and_uses_contributed_tool() -> None:
     skills_root = Path.cwd() / ".agents" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
@@ -256,7 +249,7 @@ def test_react_agent_uses_web_search_skill_with_lazy_load_real() -> None:
                 "tool_calls": [
                     FakeToolCall(
                         "call-1",
-                        "get_skill_details",
+                        "activate_skill",
                         json.dumps({"skill_name": "web_search"}),
                     )
                 ],
@@ -280,7 +273,44 @@ def test_react_agent_uses_web_search_skill_with_lazy_load_real() -> None:
     result = agent.run("find latest leo info", max_iterations=6)
 
     assert result == "done"
-    assert "web_search" in registry._loaded_actions
+    assert "web_search" in registry.get_all_tools()
+    assert registry.get_activated_skill_ids() == ["web_search"]
+
+
+def test_react_agent_can_load_bundled_resource_from_activated_skill() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "Need the PDF skill.",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-1",
+                        "activate_skill",
+                        json.dumps({"skill_name": "pdf"}),
+                    )
+                ],
+            },
+            {
+                "content": "Need the form-specific guide.",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-2",
+                        "get_skill_resource",
+                        json.dumps({"skill_name": "pdf", "resource_path": "forms.md"}),
+                    )
+                ],
+            },
+            {"content": "Final Answer: loaded"},
+        ]
+    )
+
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("help with a pdf form", max_iterations=6)
+
+    assert result == "loaded"
 
 
 def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFixture) -> None:

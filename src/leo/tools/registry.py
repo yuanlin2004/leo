@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-_FRONTMATTER_DELIM = "---"
+from leo.skills import (
+    SkillActivationResult,
+    SkillsCatalog,
+    SkillsCatalogError,
+)
 
 
 class ToolsRegistryError(Exception):
@@ -16,277 +19,78 @@ class ToolsRegistryError(Exception):
 class RegisteredTool:
     schema: dict[str, Any]
     handler: Callable[..., Any]
-
-
-@dataclass
-class SkillManifest:
-    name: str
-    description: str
-    path: Path
-    actions: list[str]
-    allow_implicit_invocation: bool = True
+    provenance: str
 
 
 class ToolsRegistry:
-    def __init__(self, skills_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        skills_root: str | Path | None = None,
+        *,
+        user_skills_root: str | Path | None = None,
+    ) -> None:
         self._tools: dict[str, RegisteredTool] = {}
-        self._skills: dict[str, SkillManifest] = {}
-        self._loaded_skill_instructions: dict[str, str] = {}
-        self._loaded_actions: dict[str, Callable[..., Any]] = {}
-        self._skills_root = Path(skills_root) if skills_root else None
-
+        self._catalog = SkillsCatalog(
+            project_root=skills_root,
+            user_root=user_skills_root,
+        )
         self._register_meta_tools()
-        self._refresh_skills_index()
 
     def _register_meta_tools(self) -> None:
         self.register_tool(
             name="list_available_skills",
-            description="List discovered skills with name and summary.",
+            description="List discovered skills with compact metadata only.",
             parameters={"type": "object", "properties": {}},
             handler=lambda: self.list_available_skills(),
+            provenance="runtime:core",
         )
         self.register_tool(
-            name="get_skill_details",
+            name="activate_skill",
             description=(
-                "Load one skill lazily and return its instructions. "
-                "Also makes that skill's actions available."
+                "Activate one discovered skill, load its protected instructions, "
+                "and register any tools it contributes into the current session."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "skill_name": {
                         "type": "string",
-                        "description": "The skill to load by name.",
+                        "description": "The discovered skill to activate by name or canonical id.",
                     }
                 },
                 "required": ["skill_name"],
+                "additionalProperties": False,
             },
-            handler=lambda skill_name: self.get_skill_details(skill_name),
+            handler=lambda skill_name: self.activate_skill(skill_name),
+            provenance="runtime:core",
         )
         self.register_tool(
-            name="execute_skill_action",
+            name="get_skill_resource",
             description=(
-                "Execute a loaded skill action by name. "
-                "Pass args in action_input, or as direct fields."
+                "Load a bundled resource from an activated skill, such as a referenced "
+                "markdown guide or helper script."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "action_name": {
+                    "skill_name": {
                         "type": "string",
-                        "description": "Action name exposed by a loaded skill.",
+                        "description": "The activated skill name or canonical id.",
                     },
-                    "action_input": {
-                        "type": "object",
-                        "description": "Keyword arguments for the action.",
+                    "resource_path": {
+                        "type": "string",
+                        "description": "Relative path to a bundled skill resource.",
                     },
                 },
-                "required": ["action_name"],
-                "additionalProperties": True,
+                "required": ["skill_name", "resource_path"],
+                "additionalProperties": False,
             },
-            handler=self._execute_skill_action_tool,
+            handler=lambda skill_name, resource_path: self.get_skill_resource(
+                skill_name,
+                resource_path,
+            ),
+            provenance="runtime:core",
         )
-
-    def _execute_skill_action_tool(
-        self,
-        action_name: str,
-        action_input: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        merged_input: dict[str, Any] = {}
-
-        if action_input is not None:
-            if not isinstance(action_input, dict):
-                raise ToolsRegistryError("action_input must be a JSON object.")
-            merged_input.update(action_input)
-
-        if kwargs:
-            merged_input.update(kwargs)
-
-        return self.execute_skill_action(
-            action_name=action_name,
-            action_input=merged_input or None,
-        )
-
-    @staticmethod
-    def _coerce_frontmatter_value(raw: str) -> Any:
-        value = raw.strip()
-        lowered = value.lower()
-        if lowered == "true":
-            return True
-        if lowered == "false":
-            return False
-        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-            return value[1:-1]
-        if value.startswith("'") and value.endswith("'") and len(value) >= 2:
-            return value[1:-1]
-        return value
-
-    @classmethod
-    def _parse_frontmatter_and_body(cls, content: str) -> tuple[dict[str, Any], str]:
-        text = content.lstrip()
-        if not text.startswith(_FRONTMATTER_DELIM):
-            return {}, content
-
-        parts = text.split("\n")
-        if not parts or parts[0].strip() != _FRONTMATTER_DELIM:
-            return {}, content
-
-        frontmatter_lines: list[str] = []
-        body_start = None
-        for idx, line in enumerate(parts[1:], start=1):
-            if line.strip() == _FRONTMATTER_DELIM:
-                body_start = idx + 1
-                break
-            frontmatter_lines.append(line)
-
-        if body_start is None:
-            return {}, content
-
-        metadata: dict[str, Any] = {}
-        active_list_key: str | None = None
-
-        for line in frontmatter_lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("- ") and active_list_key:
-                metadata.setdefault(active_list_key, [])
-                metadata[active_list_key].append(stripped[2:].strip())
-                continue
-            if ":" not in line:
-                active_list_key = None
-                continue
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if value:
-                metadata[key] = cls._coerce_frontmatter_value(value)
-                active_list_key = None
-            else:
-                metadata[key] = []
-                active_list_key = key
-
-        body = "\n".join(parts[body_start:]).lstrip("\n")
-        return metadata, body
-
-    def _candidate_skill_roots(self) -> list[Path]:
-        if self._skills_root is not None:
-            return [self._skills_root]
-
-        roots: list[Path] = []
-        for base in [Path.cwd(), *Path.cwd().parents]:
-            candidate = base / ".agents" / "skills"
-            if candidate.exists():
-                roots.append(candidate)
-        return roots
-
-    def _refresh_skills_index(self) -> None:
-        self._skills = {}
-        for root in self._candidate_skill_roots():
-            for skill_md in sorted(root.glob("*/SKILL.md")):
-                try:
-                    metadata, _ = self._parse_frontmatter_and_body(
-                        skill_md.read_text(encoding="utf-8")
-                    )
-                except Exception:
-                    continue
-
-                name = str(metadata.get("name") or skill_md.parent.name).strip()
-                if not name:
-                    continue
-
-                description = str(metadata.get("description") or "").strip()
-                raw_actions = metadata.get("actions") or []
-                actions = raw_actions if isinstance(raw_actions, list) else []
-                allow_implicit = bool(metadata.get("allow_implicit_invocation", True))
-
-                self._skills[name] = SkillManifest(
-                    name=name,
-                    description=description,
-                    path=skill_md,
-                    actions=[str(action) for action in actions],
-                    allow_implicit_invocation=allow_implicit,
-                )
-
-    def list_available_skills(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": skill.name,
-                "description": skill.description,
-                "allow_implicit_invocation": skill.allow_implicit_invocation,
-            }
-            for skill in sorted(self._skills.values(), key=lambda item: item.name)
-        ]
-
-    def _load_skill_actions(self, skill: SkillManifest) -> None:
-        script_path = skill.path.parent / "scripts" / "actions.py"
-        if not script_path.exists():
-            return
-
-        module_name = f"leo_skill_{skill.name}_{abs(hash(str(script_path.resolve())))}"
-        spec = importlib.util.spec_from_file_location(module_name, script_path)
-        if spec is None or spec.loader is None:
-            raise ToolsRegistryError(
-                f"Failed to load skill actions module for {skill.name}."
-            )
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        register_fn = getattr(module, "register_actions", None)
-        if not callable(register_fn):
-            return
-
-        action_map = register_fn()
-        if not isinstance(action_map, dict):
-            raise ToolsRegistryError(
-                f"Skill register_actions() for {skill.name} must return dict."
-            )
-
-        for action_name, handler in action_map.items():
-            if not callable(handler):
-                continue
-            self._loaded_actions[str(action_name)] = handler
-
-    def get_skill_details(self, skill_name: str) -> str:
-        skill = self._skills.get(skill_name)
-        if skill is None:
-            raise ToolsRegistryError(f"Unknown skill: {skill_name}")
-
-        if skill.name in self._loaded_skill_instructions:
-            return self._loaded_skill_instructions[skill.name]
-
-        _metadata, body = self._parse_frontmatter_and_body(
-            skill.path.read_text(encoding="utf-8")
-        )
-        details = (
-            f"Skill: {skill.name}\n"
-            f"Description: {skill.description}\n"
-            f"Actions: {', '.join(skill.actions) if skill.actions else 'none'}\n\n"
-            f"{body.strip()}"
-        ).strip()
-
-        self._loaded_skill_instructions[skill.name] = details
-        self._load_skill_actions(skill)
-        return details
-
-    def execute_skill_action(
-        self,
-        action_name: str,
-        action_input: dict[str, Any] | None = None,
-    ) -> Any:
-        handler = self._loaded_actions.get(action_name)
-        if handler is None:
-            raise ToolsRegistryError(
-                f"Unknown or unloaded skill action: {action_name}. "
-                "Load the skill first with get_skill_details."
-            )
-
-        kwargs = action_input or {}
-        if not isinstance(kwargs, dict):
-            raise ToolsRegistryError("action_input must be a JSON object.")
-        return handler(**kwargs)
 
     def register_tool(
         self,
@@ -295,7 +99,10 @@ class ToolsRegistry:
         description: str,
         parameters: dict[str, Any],
         handler: Callable[..., Any],
+        provenance: str = "runtime:user",
     ) -> None:
+        if name in self._tools:
+            raise ToolsRegistryError(f"Duplicate tool name: {name}")
         self._tools[name] = RegisteredTool(
             schema={
                 "type": "function",
@@ -306,39 +113,135 @@ class ToolsRegistry:
                 },
             },
             handler=handler,
+            provenance=provenance,
         )
 
-    def get_tool_schemas(self) -> list[dict[str, Any]]:
-        schemas = [registered.schema for registered in self._tools.values()]
-        for action_name in sorted(self._loaded_actions):
-            schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": action_name,
-                        "description": "Action from a loaded skill.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "additionalProperties": True,
-                        },
-                    },
-                }
+    def _register_skill_tools(self, activation: SkillActivationResult) -> None:
+        for tool in activation.tools:
+            self.register_tool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                handler=tool.handler,
+                provenance=f"skill:{activation.skill_id}",
             )
-        return schemas
+
+    def _remove_skill_tools(self) -> None:
+        skill_tool_names = [
+            name
+            for name, registered in self._tools.items()
+            if registered.provenance.startswith("skill:")
+        ]
+        for name in skill_tool_names:
+            self._tools.pop(name, None)
+
+    def refresh_skills(self) -> None:
+        self._catalog.refresh()
+
+    def list_available_skills(self) -> list[dict[str, Any]]:
+        return [summary.to_dict() for summary in self._catalog.list_available_skills()]
+
+    def get_skill_summary(self, skill_name: str) -> dict[str, Any]:
+        return self._catalog.get_skill_summary(skill_name).to_dict()
+
+    def describe_skill(self, skill_name: str) -> str:
+        return self._catalog.describe_skill(skill_name)
+
+    def activate_skill(self, skill_name: str) -> dict[str, Any]:
+        try:
+            activation = self._catalog.activate_skill(
+                skill_name,
+                active_runtime_tool_names=set(self._tools),
+            )
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+        if activation.already_activated:
+            return activation.to_dict()
+
+        try:
+            self._register_skill_tools(activation)
+        except Exception as exc:
+            try:
+                self._catalog.deactivate_skill(skill_name)
+            except SkillsCatalogError:
+                pass
+            raise ToolsRegistryError(str(exc)) from exc
+
+        return activation.to_dict()
+
+    def get_skill_resource(self, skill_name: str, resource_path: str) -> dict[str, Any]:
+        try:
+            return self._catalog.load_skill_resource(skill_name, resource_path)
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def reset_session_state(self) -> None:
+        self._remove_skill_tools()
+        self._catalog.reset_session_state()
+
+    def restore_activated_skills(self, skill_ids: list[str]) -> list[dict[str, Any]]:
+        self.reset_session_state()
+        restored_payloads: list[dict[str, Any]] = []
+        try:
+            activations = self._catalog.restore_activated_skills(
+                skill_ids,
+                active_runtime_tool_names=set(self._tools),
+            )
+            for activation in activations:
+                self._register_skill_tools(activation)
+                restored_payloads.append(activation.to_dict())
+        except Exception as exc:
+            self.reset_session_state()
+            raise ToolsRegistryError(str(exc)) from exc
+        return restored_payloads
+
+    def get_activated_skill_ids(self) -> list[str]:
+        return self._catalog.get_activated_skill_ids()
+
+    def get_protected_skill_context(self) -> str:
+        activated = self._catalog.get_activated_skills()
+        if not activated:
+            return ""
+
+        lines = [
+            "Activated skill instructions:",
+        ]
+        for item in activated:
+            resource_note = ""
+            if item.resources:
+                preview = ", ".join(item.resources[:8])
+                if len(item.resources) > 8:
+                    preview += ", ..."
+                resource_note = (
+                    "\nBundled resources available via get_skill_resource: "
+                    f"{preview}"
+                )
+            lines.extend(
+                [
+                    "",
+                    f"[{item.manifest.name}]",
+                    (item.instructions or "(no additional instructions)") + resource_note,
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
+        return [registered.schema for registered in self._tools.values()]
 
     def get_all_tools(self) -> dict[str, str]:
-        base = {
+        return {
             name: registered.schema["function"]["description"]
             for name, registered in self._tools.items()
         }
-        for action_name in self._loaded_actions:
-            base[action_name] = "Action from a loaded skill."
-        return base
+
+    def get_tool_provenance(self, tool_name: str) -> str:
+        registered = self._tools.get(tool_name)
+        if registered is None:
+            raise ToolsRegistryError(f"Unknown tool: {tool_name}")
+        return registered.provenance
 
     def execute(self, tool_name: str, **tool_args: Any) -> Any:
-        if tool_name in self._loaded_actions:
-            return self._loaded_actions[tool_name](**tool_args)
         if tool_name not in self._tools:
             raise ToolsRegistryError(f"Unknown tool: {tool_name}")
         return self._tools[tool_name].handler(**tool_args)

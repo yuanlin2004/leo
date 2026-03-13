@@ -7,7 +7,7 @@ Script: `react_web_search_e2e.py`
 This sample demonstrates a multi-step ReAct flow with tool use:
 
 1. `list_available_skills()`
-2. `get_skill_details(skill_name="web_search")`
+2. `activate_skill(skill_name="web_search")`
 3. `web_search(...)` query #1
 4. `web_search(...)` query #2
 5. Final synthesized answer
@@ -50,10 +50,10 @@ Script: `react_news_brief_e2e.py`
 This sample demonstrates a longer ReAct flow across multiple skills:
 
 1. `list_available_skills()`
-2. `get_skill_details("web_search")`
-3. `get_skill_details("source_normalizer")`
-4. `get_skill_details("date_guard")`
-5. `get_skill_details("brief_writer")`
+2. `activate_skill("web_search")`
+3. `activate_skill("source_normalizer")`
+4. `activate_skill("date_guard")`
+5. `activate_skill("brief_writer")`
 6. Multiple `web_search(...)` calls for sub-queries
 7. `dedupe_sources(...)`, `filter_by_date(...)`, `rank_by_relevance(...)`
 8. `validate_recency(...)`, `resolve_relative_dates(...)`

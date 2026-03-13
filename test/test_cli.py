@@ -11,20 +11,47 @@ from leo.cli.main import parse_args, run
 class FakeToolsRegistry:
     def __init__(self) -> None:
         self.skill_details = {
-            "web_search": "Skill: web_search\nDescription: Search the web.",
+            "web_search": (
+                "Skill: web_search\n"
+                "Canonical ID: web_search\n"
+                "Description: Search the web.\n"
+                "Scope: project\n"
+                "Status: inactive\n"
+                "Loadable: yes"
+            ),
         }
+        self.activated_skill_ids: list[str] = []
+        self.restored_skill_ids: list[list[str]] = []
         self.tools = {
-            "list_available_skills": "List discovered skills with name and summary.",
-            "get_skill_details": "Load one skill lazily and return its instructions.",
+            "list_available_skills": "List discovered skills with compact metadata only.",
+            "activate_skill": "Activate a skill and register its contributed tools.",
+            "get_skill_resource": "Load a bundled skill resource.",
         }
 
-    def list_available_skills(self) -> list[dict[str, str]]:
-        return [{"name": "web_search", "description": "Search the web."}]
+    def list_available_skills(self) -> list[dict[str, object]]:
+        return [
+            {
+                "canonical_id": "web_search",
+                "name": "web_search",
+                "description": "Search the web.",
+                "scope": "project",
+                "loadable": True,
+                "activated": False,
+            }
+        ]
 
-    def get_skill_details(self, skill_name: str) -> str:
+    def describe_skill(self, skill_name: str) -> str:
         if skill_name not in self.skill_details:
             raise RuntimeError(f"Unknown skill: {skill_name}")
         return self.skill_details[skill_name]
+
+    def get_activated_skill_ids(self) -> list[str]:
+        return list(self.activated_skill_ids)
+
+    def restore_activated_skills(self, skill_ids: list[str]) -> list[dict[str, str]]:
+        self.restored_skill_ids.append(list(skill_ids))
+        self.activated_skill_ids = list(skill_ids)
+        return [{"name": skill_id} for skill_id in skill_ids]
 
     def get_all_tools(self) -> dict[str, str]:
         return dict(self.tools)
@@ -284,11 +311,13 @@ def test_run_chat_save_and_load_transcript(tmp_path: Path, monkeypatch) -> None:
 
     assert code == 0
     assert saved_path.exists()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert payload["activated_skill_ids"] == []
     assert payload["messages"][-1]["content"] == "reply:hello"
     assert any("Saved transcript to" in item for item in outputs)
     assert any("Loaded transcript from" in item for item in outputs)
     assert agent.session.conversation == payload["messages"]
+    assert agent.tools_registry.restored_skill_ids == [[]]
 
 
 def test_run_chat_save_and_load_errors(tmp_path: Path, monkeypatch) -> None:

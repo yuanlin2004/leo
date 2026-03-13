@@ -7,37 +7,52 @@ import pytest
 from leo.tools.registry import ToolsRegistry, ToolsRegistryError
 
 
-def _write_skill(root: Path) -> None:
-    skill_dir = root / "echo_skill"
+def _write_skill(
+    root: Path,
+    *,
+    name: str = "echo_skill",
+    description: str = "Echo input text.",
+    body: str = "Use this skill to echo input data.\n",
+    action_name: str = "echo_tool",
+    action_impl: str | None = None,
+) -> None:
+    skill_dir = root / name
     scripts_dir = skill_dir / "scripts"
     scripts_dir.mkdir(parents=True)
 
     (skill_dir / "SKILL.md").write_text(
-        """---
-name: echo_skill
-description: Echo input text.
-actions:
-  - echo_action
-allow_implicit_invocation: true
+        f"""---
+name: {name}
+description: {description}
 ---
-Use this skill to echo input data.
-""",
+{body}""",
         encoding="utf-8",
     )
 
+    implementation = action_impl or f"""def {action_name}(query: str) -> str:
+    return f"echo:{{query}}"
+"""
     (scripts_dir / "actions.py").write_text(
-        """def echo_action(query: str) -> str:
-    return f\"echo:{query}\"
-
+        implementation
+        + f"""
 
 def register_actions() -> dict[str, object]:
-    return {\"echo_action\": echo_action}
+    return {{"{action_name}": {action_name}}}
 """,
         encoding="utf-8",
     )
 
 
-def test_registry_discovers_skills_and_exposes_meta_tools(tmp_path: Path) -> None:
+def _write_invalid_skill(root: Path, *, folder_name: str = "invalid_skill") -> None:
+    skill_dir = root / folder_name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "This is not a strict AgentSkills manifest.\n",
+        encoding="utf-8",
+    )
+
+
+def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -> None:
     skills_root = tmp_path / ".agents" / "skills"
     _write_skill(skills_root)
 
@@ -47,47 +62,173 @@ def test_registry_discovers_skills_and_exposes_meta_tools(tmp_path: Path) -> Non
     assert [item["name"] for item in available] == ["echo_skill"]
     all_tools = registry.get_all_tools()
     assert "list_available_skills" in all_tools
-    assert "get_skill_details" in all_tools
-    assert "search_skills" not in all_tools
+    assert "activate_skill" in all_tools
+    assert "get_skill_resource" in all_tools
+    assert "echo_tool" not in all_tools
 
 
-def test_registry_lazy_loads_skill_details_and_actions(tmp_path: Path) -> None:
+def test_registry_activates_skill_and_registers_runtime_tools(tmp_path: Path) -> None:
     skills_root = tmp_path / ".agents" / "skills"
     _write_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
 
     with pytest.raises(ToolsRegistryError):
-        registry.execute_skill_action("echo_action", {"query": "x"})
+        registry.execute("echo_tool", query="x")
 
-    details = registry.get_skill_details("echo_skill")
-    assert "Use this skill to echo input data." in details
+    activation = registry.activate_skill("echo_skill")
 
-    result = registry.execute_skill_action("echo_action", {"query": "x"})
-    assert result == "echo:x"
+    assert activation["name"] == "echo_skill"
+    assert activation["already_activated"] is False
+    assert activation["tool_names"] == ["echo_tool"]
+    assert registry.execute("echo_tool", query="x") == "echo:x"
+    assert "echo_skill" in registry.get_protected_skill_context()
 
 
-def test_registry_execute_skill_action_allows_direct_kwargs(tmp_path: Path) -> None:
+def test_registry_reset_clears_activated_skills_and_tools(tmp_path: Path) -> None:
     skills_root = tmp_path / ".agents" / "skills"
     _write_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
-    registry.get_skill_details("echo_skill")
+    registry.activate_skill("echo_skill")
 
-    result = registry.execute(
-        "execute_skill_action",
-        action_name="echo_action",
-        query="x",
+    registry.reset_session_state()
+
+    summaries = registry.list_available_skills()
+    assert summaries[0]["activated"] is False
+    assert "echo_tool" not in registry.get_all_tools()
+    assert registry.get_protected_skill_context() == ""
+
+
+def test_registry_marks_invalid_skills_as_not_loadable(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_invalid_skill(skills_root)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    summary = registry.list_available_skills()[0]
+    assert summary["loadable"] is False
+    assert "validation_error" in summary
+
+    with pytest.raises(ToolsRegistryError):
+        registry.activate_skill(summary["canonical_id"])
+
+
+def test_registry_prefers_project_skill_over_user_skill_on_collision(tmp_path: Path) -> None:
+    project_root = tmp_path / "project" / ".agents" / "skills"
+    user_root = tmp_path / "user" / ".codex" / "skills"
+    _write_skill(
+        user_root,
+        name="shared_skill",
+        description="User copy.",
+        action_name="shared_tool",
+        action_impl="""def shared_tool(query: str) -> str:
+    return "from-user"
+""",
     )
-    assert result == "echo:x"
+    _write_skill(
+        project_root,
+        name="shared_skill",
+        description="Project copy.",
+        action_name="shared_tool",
+        action_impl="""def shared_tool(query: str) -> str:
+    return "from-project"
+""",
+    )
+
+    registry = ToolsRegistry(
+        skills_root=project_root,
+        user_skills_root=user_root,
+    )
+
+    summary = registry.list_available_skills()[0]
+    assert summary["description"] == "Project copy."
+    assert summary["scope"] == "project"
+
+    registry.activate_skill("shared_skill")
+    assert registry.execute("shared_tool", query="x") == "from-project"
 
 
-def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
+def test_registry_rejects_duplicate_contributed_tool_names_atomically(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_skill(
+        skills_root,
+        name="first_skill",
+        action_name="shared_tool",
+        action_impl="""def shared_tool(query: str) -> str:
+    return "first"
+""",
+    )
+    _write_skill(
+        skills_root,
+        name="second_skill",
+        action_name="shared_tool",
+        action_impl="""def shared_tool(query: str) -> str:
+    return "second"
+""",
+    )
+
+    registry = ToolsRegistry(skills_root=skills_root)
+    registry.activate_skill("first_skill")
+
+    with pytest.raises(ToolsRegistryError):
+        registry.activate_skill("second_skill")
+
+    assert registry.execute("shared_tool", query="x") == "first"
+    assert registry.get_activated_skill_ids() == ["first_skill"]
+
+
+def test_registry_restore_reactivates_tools_from_transcript_state() -> None:
     skills_root = Path.cwd() / ".agents" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
-    registry.get_skill_details("source_normalizer")
-    registry.get_skill_details("date_guard")
+    registry.activate_skill("current_time")
+    assert "get_current_time" in registry.get_all_tools()
+
+    registry.reset_session_state()
+    assert "get_current_time" not in registry.get_all_tools()
+
+    restored = registry.restore_activated_skills(["current_time"])
+
+    assert restored[0]["name"] == "current_time"
+    current = registry.execute(
+        "get_current_time",
+        timezone_name="America/New_York",
+        now_iso="2026-03-13T12:34:56+00:00",
+    )
+    assert current["timezone"] == "America/New_York"
+    assert current["weekday"] == "Friday"
+    assert current["date"] == "2026-03-13"
+    assert current["time"] == "08:34:56"
+    assert current["iso"] == "2026-03-13T08:34:56-04:00"
+
+
+def test_registry_loads_skill_resource_from_activated_external_skill() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+
+    activation = registry.activate_skill("pdf")
+
+    assert "forms.md" in activation["resource_names"]
+    assert "reference.md" in activation["resource_names"]
+
+    forms = registry.get_skill_resource("pdf", "forms.md")
+    assert forms["content_type"] == "text"
+    assert "extract_form_field_info.py" in forms["content"]
+
+    reference = registry.get_skill_resource("pdf", "reference.md")
+    assert reference["content_type"] == "text"
+    assert "pypdfium2 is a Python binding for PDFium" in reference["content"]
+
+    with pytest.raises(ToolsRegistryError):
+        registry.get_skill_resource("frontend-design", "missing.md")
+
+
+def test_registry_executes_real_project_skill_tools_after_activation() -> None:
+    skills_root = Path.cwd() / ".agents" / "skills"
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    registry.activate_skill("source_normalizer")
+    registry.activate_skill("date_guard")
 
     items = [
         {"title": "A", "url": "https://example.com/x?a=1", "score": 0.4, "date": "2026-02-15"},
@@ -97,13 +238,6 @@ def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
 
     deduped = registry.execute("dedupe_sources", items=items)
     assert len(deduped) == 2
-
-    deduped_via_alias = registry.execute(
-        "execute_skill_action",
-        action_name="dedupe_sources",
-        action_input={"sources": items},
-    )
-    assert len(deduped_via_alias) == 2
 
     recent = registry.execute(
         "filter_by_date",
@@ -126,17 +260,6 @@ def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
     assert recency["fresh_count"] == 1
     assert recency["stale_count"] == 1
 
-    recency_via_alias = registry.execute(
-        "execute_skill_action",
-        action_name="validate_recency",
-        action_input={
-            "sources": deduped,
-            "max_age_days": 30,
-            "now_iso": "2026-02-19T00:00:00+00:00",
-        },
-    )
-    assert recency_via_alias["fresh_count"] == 1
-
     resolved = registry.execute(
         "resolve_relative_dates",
         text="Published today and updated last week.",
@@ -146,11 +269,11 @@ def test_registry_executes_source_normalizer_and_date_guard_actions() -> None:
     assert "2026-02-09 to 2026-02-15" in resolved
 
 
-def test_registry_executes_brief_writer_actions() -> None:
+def test_registry_executes_brief_writer_after_activation() -> None:
     skills_root = Path.cwd() / ".agents" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
-    registry.get_skill_details("brief_writer")
+    registry.activate_skill("brief_writer")
     findings = [
         {
             "title": "Model launch",
@@ -176,20 +299,12 @@ def test_registry_executes_brief_writer_actions() -> None:
     assert "https://example.com/model" in citations
 
 
-def test_registry_executes_current_time_actions() -> None:
-    skills_root = Path.cwd() / ".agents" / "skills"
-    registry = ToolsRegistry(skills_root=skills_root)
+def test_registry_protected_context_mentions_available_skill_resources() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
 
-    registry.get_skill_details("current_time")
+    registry.activate_skill("pdf")
+    context = registry.get_protected_skill_context()
 
-    current = registry.execute(
-        "get_current_time",
-        timezone_name="America/New_York",
-        now_iso="2026-03-13T12:34:56+00:00",
-    )
-
-    assert current["timezone"] == "America/New_York"
-    assert current["weekday"] == "Friday"
-    assert current["date"] == "2026-03-13"
-    assert current["time"] == "08:34:56"
-    assert current["iso"] == "2026-03-13T08:34:56-04:00"
+    assert "Bundled resources available via get_skill_resource" in context
+    assert "forms.md" in context
+    assert "reference.md" in context

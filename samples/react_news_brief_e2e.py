@@ -91,7 +91,7 @@ def main() -> None:
         extra_system_prompt="""
 For this task, run an explicit multi-step ReAct workflow:
 1) Call list_available_skills.
-2) Load skills with get_skill_details in this order:
+2) Activate skills in this order:
    web_search, source_normalizer, date_guard, brief_writer.
 3) Call web_search at least 3 times for targeted sub-queries.
 4) Use dedupe_sources, filter_by_date, and rank_by_relevance on collected findings.

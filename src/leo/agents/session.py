@@ -10,9 +10,11 @@ class AgentSession:
         *,
         system_prompt: str,
         run_loop: Callable[[list[dict[str, Any]], int], str],
+        reset_callback: Callable[[], None] | None = None,
     ) -> None:
         self._system_prompt = system_prompt
         self._run_loop = run_loop
+        self._reset_callback = reset_callback
         self._conversation: list[dict[str, Any]] = []
         self.reset()
 
@@ -21,6 +23,8 @@ class AgentSession:
         return self._run_loop(self._conversation, max_iterations)
 
     def reset(self) -> None:
+        if self._reset_callback is not None:
+            self._reset_callback()
         self._conversation = [{"role": "system", "content": self._system_prompt}]
 
     @staticmethod
