@@ -108,6 +108,22 @@ def test_parse_args_for_ask_command() -> None:
     assert args.max_iterations == 10
 
 
+def test_parse_args_for_run_command_defaults_to_benchmark_environment() -> None:
+    args = parse_args(["run", "--task-id", "task-1"])
+
+    assert args.command == "run"
+    assert args.environment == "appworld"
+    assert args.task_id == ["task-1"]
+    assert args.profile == "benchmark-environment"
+
+
+def test_parse_args_for_replay_command() -> None:
+    args = parse_args(["replay", "--trace", "trace.jsonl"])
+
+    assert args.command == "replay"
+    assert args.trace == "trace.jsonl"
+
+
 def test_parse_args_defaults_to_chat_without_subcommand() -> None:
     args = parse_args([])
 
@@ -271,6 +287,30 @@ def test_run_defaults_to_chat_without_subcommand() -> None:
 
     assert code == 0
     assert outputs == ["Leo chat started. Type /help for commands."]
+
+
+def test_run_replay_outputs_trace_summary(tmp_path: Path) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-03-13T00:00:00+00:00",
+                "event_type": "run_start",
+                "payload": {"task_id": "task-1"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    args = parse_args(["replay", "--trace", str(trace_path)])
+    outputs: list[str] = []
+
+    code = run(args, output_fn=outputs.append)
+
+    assert code == 0
+    replay_payload = json.loads(outputs[0])
+    assert replay_payload["trace_path"] == str(trace_path.resolve())
+    assert replay_payload["event_types"] == {"run_start": 1}
 
 
 def test_run_chat_commands_work() -> None:

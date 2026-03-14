@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+from leo.agents import ReActAgent
+from leo.runs import AppWorldRunConfig, replay_trace, run_appworld_tasks
+from leo.runs.appworld import TracingLLM
+from test.fakes import FakeLLM, FakeToolCall
+
+
+def _write_fake_mcp_server(path: Path) -> None:
+    path.write_text(
+        """from __future__ import annotations
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "fake-appworld-mcp", "version": "1.0"},
+                "capabilities": {"tools": {}}
+            }
+        }) + "\\n")
+        sys.stdout.flush()
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "tools": [
+                    {
+                        "name": "appworld_ping",
+                        "description": "Ping the AppWorld MCP server.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"message": {"type": "string"}},
+                            "required": ["message"],
+                            "additionalProperties": False
+                        }
+                    }
+                ]
+            }
+        }) + "\\n")
+        sys.stdout.flush()
+    elif method == "tools/call":
+        message_text = message.get("params", {}).get("arguments", {}).get("message", "")
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "content": [{"type": "text", "text": f"pong:{message_text}"}],
+                "structuredContent": {"pong": message_text},
+                "isError": False
+            }
+        }) + "\\n")
+        sys.stdout.flush()
+""",
+        encoding="utf-8",
+    )
+
+
+class _FakeAppWorld:
+    def __init__(self, task_id: str, experiment_name: str, **kwargs) -> None:
+        self.task = {
+            "task_id": task_id,
+            "instruction": "Resolve the customer billing issue.",
+            "metadata": {"difficulty": "medium"},
+            "docs": ["Invoices can be checked through the billing service."],
+        }
+        self.output_directory = kwargs.get("output_root")
+        self.executed: list[str] = []
+        self.saved_answer: str | None = None
+
+    def execute(self, code: str) -> dict[str, object]:
+        self.executed.append(code)
+        return {
+            "execution_index": len(self.executed),
+            "executed": list(self.executed),
+        }
+
+    def save(self, **kwargs) -> None:
+        answer = kwargs.get("answer")
+        if answer is None:
+            outputs = kwargs.get("outputs") or kwargs.get("output_dict") or {}
+            if isinstance(outputs, dict):
+                answer = outputs.get("answer")
+        self.saved_answer = str(answer) if answer is not None else None
+
+    def evaluate(self) -> dict[str, object]:
+        return {
+            "evaluated": True,
+            "passed": self.saved_answer == "final appworld answer",
+        }
+
+    def close(self) -> None:
+        return None
+
+
+def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorld,
+        load_task_ids=lambda dataset_name, root=None: ["task-direct-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-direct-1",),
+        experiment_name="direct-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=6,
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "Need the task context first.",
+                        "tool_calls": [
+                            FakeToolCall("call-1", "get_environment_task_context", "{}")
+                        ],
+                    },
+                    {
+                        "content": "Search the docs.",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-2",
+                                "search_appworld_docs",
+                                json.dumps({"query": "invoice"}),
+                            )
+                        ],
+                    },
+                    {
+                        "content": "Execute code step one.",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-3",
+                                "execute_appworld_code",
+                                json.dumps({"code": "invoice_status = 'resolved'"}),
+                            )
+                        ],
+                    },
+                    {
+                        "content": "Execute code step two.",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-4",
+                                "execute_appworld_code",
+                                json.dumps({"code": "summary = 'ready'"}),
+                            )
+                        ],
+                    },
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "final appworld answer"}),
+                            )
+                        ],
+                    },
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
+
+    assert summary.task_count == 1
+    assert summary.succeeded == 1
+    result = summary.results[0]
+    assert result.success is True
+    assert result.final_answer == "final appworld answer"
+    assert result.evaluation == {"evaluated": True, "passed": True, "task_id": "task-direct-1"}
+    assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == "final appworld answer"
+    replay = replay_trace(result.trace_path)
+    assert replay["event_types"]["run_start"] == 1
+    assert replay["event_types"]["tool_call"] >= 3
+    assert replay["event_types"]["model_request"] >= 1
+
+
+def test_run_appworld_tasks_with_mcp_tools(
+    tmp_path: Path,
+) -> None:
+    server_script = tmp_path / "fake_appworld_mcp.py"
+    _write_fake_mcp_server(server_script)
+    task_payload = tmp_path / "task.json"
+    task_payload.write_text(
+        json.dumps(
+            {
+                "task_id": "task-mcp-1",
+                "instruction": "Use the MCP tool and answer the task.",
+                "expected_answer": "done",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = AppWorldRunConfig(
+        task_paths=(str(task_payload),),
+        experiment_name="mcp-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=4,
+        use_mcp_tools=True,
+        appworld_mcp_command=("python3", str(server_script)),
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "Use the MCP path.",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-1",
+                                "appworld_ping",
+                                json.dumps({"message": "hello"}),
+                            )
+                        ],
+                    },
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "done"}),
+                            )
+                        ],
+                    },
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
+
+    assert summary.task_count == 1
+    result = summary.results[0]
+    assert result.success is True
+    assert result.used_mcp_tools is True
+    assert result.evaluation == {
+        "task_id": "task-mcp-1",
+        "evaluated": True,
+        "passed": True,
+        "saved_output_count": 1,
+    }
+    trace_summary = replay_trace(result.trace_path)
+    assert trace_summary["event_types"]["tool_call"] >= 1
+    assert trace_summary["event_types"]["tool_result"] >= 1

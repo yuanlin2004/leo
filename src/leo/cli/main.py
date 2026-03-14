@@ -14,11 +14,13 @@ from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
 from leo.core.logging_utils import resolve_log_level
 from leo.core.env import load_project_env
+from leo.runs import AppWorldRunConfig, replay_trace, run_appworld_tasks
+from leo.runs.appworld import TracingLLM, parse_mcp_command
 from leo.tools.profiles import BUILTIN_CAPABILITY_PROFILES, resolve_capability_profile
 from leo.tools.registry import ToolsRegistry
 
 VALID_LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-COMMAND_NAMES = {"ask", "chat"}
+COMMAND_NAMES = {"ask", "chat", "run", "evaluate", "replay"}
 HELP_FLAGS = {"-h", "--help"}
 
 CHAT_HELP_TEXT = "\n".join(
@@ -76,7 +78,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         "--max-iterations",
         type=int,
         default=10,
-        help="Maximum agent/tool loop iterations per user turn.",
+        help="Maximum agent/tool loop iterations per user turn or run.",
     )
     parser.add_argument(
         "--temperature",
@@ -88,6 +90,95 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         "--log-level",
         default=os.getenv("LEO_LOG_LEVEL", "INFO"),
         help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR).",
+    )
+
+
+def _add_environment_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--environment",
+        choices=("appworld",),
+        default="appworld",
+        help="Task-backed environment to run.",
+    )
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Explicit AppWorld task ID. Repeat to run multiple tasks.",
+    )
+    parser.add_argument(
+        "--task-path",
+        action="append",
+        default=[],
+        help="Path to a local AppWorld task payload JSON file. Repeat to run multiple tasks.",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="train",
+        help="AppWorld dataset split used when task IDs are not specified.",
+    )
+    parser.add_argument(
+        "--task-limit",
+        type=int,
+        default=None,
+        help="Maximum number of tasks to run.",
+    )
+    parser.add_argument(
+        "--task-offset",
+        type=int,
+        default=0,
+        help="Starting offset when enumerating tasks from a dataset split.",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        default="leo",
+        help="Experiment name used for AppWorld outputs and traces.",
+    )
+    parser.add_argument(
+        "--output-root",
+        default=str(Path("artifacts/appworld").resolve()),
+        help="Root directory for run artifacts.",
+    )
+    parser.add_argument(
+        "--appworld-root",
+        default=None,
+        help="Optional local AppWorld data root.",
+    )
+    parser.add_argument(
+        "--appworld-mcp",
+        action="store_true",
+        help="Expose AppWorld task tools through MCP in addition to the environment adapter.",
+    )
+    parser.add_argument(
+        "--appworld-mcp-url",
+        default=None,
+        help="HTTP MCP endpoint for the active AppWorld task.",
+    )
+    parser.add_argument(
+        "--appworld-mcp-command",
+        default=None,
+        help="Command used to start an AppWorld MCP server over stdio.",
+    )
+    parser.add_argument(
+        "--appworld-mcp-timeout-ms",
+        type=int,
+        default=10000,
+        help="Timeout for AppWorld MCP calls.",
+    )
+    parser.add_argument(
+        "--remote-apis-url",
+        default=None,
+        help="Optional AppWorld remote APIs base URL.",
+    )
+    parser.add_argument(
+        "--remote-environment-url",
+        default=None,
+        help="Optional AppWorld remote environment URL.",
+    )
+    parser.add_argument(
+        "--remote-docker-url",
+        default=None,
+        help="Optional AppWorld remote Docker URL.",
     )
 
 
@@ -125,35 +216,83 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip banner output when chat starts.",
     )
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run one or more environment-backed tasks non-interactively.",
+    )
+    _add_shared_options(run_parser)
+    run_parser.set_defaults(profile="benchmark-environment")
+    _add_environment_options(run_parser)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Run and evaluate one or more environment-backed tasks.",
+    )
+    _add_shared_options(evaluate_parser)
+    evaluate_parser.set_defaults(profile="benchmark-environment")
+    _add_environment_options(evaluate_parser)
+
+    replay_parser = subparsers.add_parser(
+        "replay",
+        help="Replay a saved run trace for debugging.",
+    )
+    replay_parser.add_argument(
+        "--trace",
+        required=True,
+        help="Path to a saved run trace JSONL file.",
+    )
+    replay_parser.add_argument(
+        "--log-level",
+        default=os.getenv("LEO_LOG_LEVEL", "INFO"),
+        help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR).",
+    )
+
     return parser.parse_args(raw_argv)
 
 
-def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
+def create_llm_client(args: argparse.Namespace) -> LeoLLMClient:
+    return LeoLLMClient(
+        model=args.model,
+        provider=args.provider,
+        temperature=args.temperature,
+    )
+
+
+def build_agent(
+    args: argparse.Namespace,
+    *,
+    tools_registry: ToolsRegistry | None = None,
+    llm: Any | None = None,
+    extra_system_prompt: str | None = None,
+) -> ReActAgent | SimpleAgent:
     profile = resolve_capability_profile(args.profile)
-    registry = ToolsRegistry(
+    registry = tools_registry or ToolsRegistry(
         skills_root=args.skills_root,
         user_skills_root=Path.home() / ".leo" / "skills",
         mcp_config_path=args.mcp_config,
         capability_profile=profile,
     )
-    llm = LeoLLMClient(
-        model=args.model,
-        provider=args.provider,
-        temperature=args.temperature,
-    )
+    llm_client = llm or create_llm_client(args)
+    combined_extra_prompt = "".join(
+        part for part in [profile.extra_system_prompt, extra_system_prompt] if part
+    ) or None
     if args.agent == "simple":
         return SimpleAgent(
             name="leo-simple",
-            llm=llm,
+            llm=llm_client,
             tools_registry=registry,
-            extra_system_prompt=profile.extra_system_prompt,
+            extra_system_prompt=combined_extra_prompt,
         )
     return ReActAgent(
         name="leo-react",
-        llm=llm,
+        llm=llm_client,
         tools_registry=registry,
-        extra_system_prompt=profile.extra_system_prompt,
+        extra_system_prompt=combined_extra_prompt,
     )
+
+
+def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
+    return build_agent(args)
 
 
 def run_ask(
@@ -422,10 +561,67 @@ def run(
     output_fn: Callable[[str], None] = print,
 ) -> int:
     configure_leo_logging(args.log_level, leo_only=True)
+    if args.command == "replay":
+        output_fn(json.dumps(replay_trace(args.trace), indent=2, sort_keys=True))
+        return 0
+    if args.command in {"run", "evaluate"}:
+        return run_environment_command(args, output_fn=output_fn)
     agent = agent_factory(args)
     if args.command == "chat":
         return run_chat(agent, args, input_fn=input_fn, output_fn=output_fn)
     return run_ask(agent, args, output_fn=output_fn)
+
+
+def run_environment_command(
+    args: argparse.Namespace,
+    *,
+    output_fn: Callable[[str], None] = print,
+) -> int:
+    if args.environment != "appworld":
+        raise ValueError(f"Unsupported environment: {args.environment}")
+
+    config = AppWorldRunConfig(
+        dataset_name=args.dataset,
+        task_ids=tuple(args.task_id),
+        task_paths=tuple(args.task_path),
+        experiment_name=args.experiment_name,
+        output_root=Path(args.output_root).resolve(),
+        skills_root=Path(args.skills_root).resolve(),
+        user_skills_root=Path.home() / ".leo" / "skills",
+        workspace_root=Path.cwd().resolve(),
+        max_iterations=args.max_iterations,
+        use_mcp_tools=bool(args.appworld_mcp),
+        appworld_mcp_url=args.appworld_mcp_url,
+        appworld_mcp_command=parse_mcp_command(args.appworld_mcp_command),
+        mcp_timeout_ms=args.appworld_mcp_timeout_ms,
+        remote_apis_url=args.remote_apis_url,
+        remote_environment_url=args.remote_environment_url,
+        remote_docker_url=args.remote_docker_url,
+        appworld_root=Path(args.appworld_root).resolve() if args.appworld_root else None,
+        task_limit=args.task_limit,
+        task_offset=args.task_offset,
+    )
+
+    def agent_builder(
+        registry: ToolsRegistry,
+        extra_system_prompt: str,
+        trace: Any,
+    ) -> Any:
+        traced_llm = TracingLLM(create_llm_client(args), trace)
+        return build_agent(
+            args,
+            tools_registry=registry,
+            llm=traced_llm,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(
+        config,
+        agent_builder=agent_builder,
+        evaluate=args.command == "evaluate",
+    )
+    output_fn(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -60,8 +60,11 @@ def test_registry_attaches_and_detaches_environment_tools() -> None:
 
     assert attached["environment"] == "appworld"
     assert attached["tool_names"] == [
+        "evaluate_environment_task",
+        "execute_appworld_code",
         "get_environment_task_context",
         "save_environment_output",
+        "search_appworld_docs",
     ]
     assert "get_environment_task_context" in registry.get_all_tools()
     assert registry.execute("get_environment_task_context") == {

@@ -43,8 +43,10 @@ class ToolsRegistry:
         mcp_servers: list[MCPServerConfig] | None = None,
         mcp_config_path: str | Path | None = None,
         capability_profile: CapabilityProfile | str | None = None,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._capability_profile = resolve_capability_profile(capability_profile)
+        self._event_callback = event_callback
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
         self._local_provider = LocalToolProvider()
         self._environment_provider = EnvironmentToolProvider()
@@ -316,6 +318,11 @@ class ToolsRegistry:
     def list_mcp_servers(self) -> list[dict[str, Any]]:
         return self._mcp_provider.list_server_statuses()
 
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._event_callback is None:
+            return
+        self._event_callback(event_type, payload)
+
     def get_skill_summary(self, skill_name: str) -> dict[str, Any]:
         try:
             return self._skill_provider.get_skill_summary(skill_name)
@@ -518,21 +525,28 @@ class ToolsRegistry:
                 pass
             raise
 
-        return {
+        payload = {
             "environment": adapter.environment_name,
             "context": context,
             "tool_names": sorted(self._environment_provider.get_registered_tools()),
         }
+        self._emit_event("environment_attached", payload)
+        return payload
 
     def detach_environment(self) -> None:
         adapter = self._environment_provider.adapter
         self._environment_provider.clear()
         if adapter is None:
             return
+        environment_name = adapter.environment_name
         try:
             adapter.cleanup()
         except EnvironmentAdapterError as exc:
             raise ToolsRegistryError(str(exc)) from exc
+        self._emit_event(
+            "environment_detached",
+            {"environment": environment_name},
+        )
 
     def has_active_environment(self) -> bool:
         return self._environment_provider.adapter is not None
@@ -551,18 +565,35 @@ class ToolsRegistry:
         if adapter is None:
             raise ToolsRegistryError("No active environment.")
         try:
-            return adapter.save_outputs(outputs)
+            result = adapter.save_outputs(outputs)
         except EnvironmentAdapterError as exc:
             raise ToolsRegistryError(str(exc)) from exc
+        self._emit_event(
+            "environment_saved",
+            {
+                "environment": adapter.environment_name,
+                "outputs": _summarize_payload(outputs),
+                "result": _summarize_payload(result),
+            },
+        )
+        return result
 
     def evaluate_environment_outputs(self) -> dict[str, Any] | None:
         adapter = self._environment_provider.adapter
         if adapter is None:
             raise ToolsRegistryError("No active environment.")
         try:
-            return adapter.evaluate_outputs()
+            result = adapter.evaluate_outputs()
         except EnvironmentAdapterError as exc:
             raise ToolsRegistryError(str(exc)) from exc
+        self._emit_event(
+            "environment_evaluated",
+            {
+                "environment": adapter.environment_name,
+                "result": _summarize_payload(result),
+            },
+        )
+        return result
 
     def restore_activated_skills(self, skill_ids: list[str]) -> list[dict[str, Any]]:
         try:
@@ -660,10 +691,36 @@ class ToolsRegistry:
         provider = self._resolve_provider(tool_name)
         if provider is None:
             raise ToolsRegistryError(f"Unknown tool: {tool_name}")
+        provenance = self.get_tool_provenance(tool_name)
+        self._emit_event(
+            "tool_call",
+            {
+                "tool_name": tool_name,
+                "provenance": provenance,
+                "tool_args": _summarize_payload(tool_args),
+            },
+        )
         try:
-            return provider.execute(tool_name, **tool_args)
+            result = provider.execute(tool_name, **tool_args)
         except ToolProviderError as exc:
+            self._emit_event(
+                "tool_error",
+                {
+                    "tool_name": tool_name,
+                    "provenance": provenance,
+                    "error": str(exc),
+                },
+            )
             raise ToolsRegistryError(str(exc)) from exc
+        self._emit_event(
+            "tool_result",
+            {
+                "tool_name": tool_name,
+                "provenance": provenance,
+                "result": _summarize_payload(result),
+            },
+        )
+        return result
 
 
 def _tags_for_core_tool(tool_name: str) -> frozenset[str]:
@@ -676,3 +733,21 @@ def _tags_for_core_tool(tool_name: str) -> frozenset[str]:
     if tool_name.startswith("tmux_"):
         return frozenset({"tmux"})
     return frozenset({"general"})
+
+
+def _summarize_payload(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str) and len(value) > 400:
+            return f"{value[:397]}..."
+        return value
+    if isinstance(value, list):
+        return [_summarize_payload(item) for item in value[:20]]
+    if isinstance(value, dict):
+        summarized: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 20:
+                summarized["..."] = f"{len(value) - 20} more keys"
+                break
+            summarized[str(key)] = _summarize_payload(item)
+        return summarized
+    return repr(value)

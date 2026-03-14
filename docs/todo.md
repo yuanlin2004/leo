@@ -125,6 +125,66 @@ Verification:
 - Hidden AppWorld fields are excluded from public task context, tool results, and injected model context.
 - `pytest` passed with `78 passed, 3 skipped` when this item was implemented.
 
+### E. Implement Milestone 5 AppWorld Tooling And Run Harness
+
+Status: completed on 2026-03-13.
+
+Goal: complete Milestone 5 from [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md) by adding a generic environment-backed run/evaluate CLI, AppWorld task tooling, artifact recording, and a reproducible sequential run harness.
+
+Implemented:
+- Expanded [adapters.py](/Users/yuan/Documents/GitHub/leo/src/leo/environments/adapters.py) so `AppWorldEnvironmentAdapter` supports both local payloads and the real `appworld.AppWorld` package runtime.
+- Added AppWorld task-scoped tools for task context, live code execution, public doc search, output saving, and evaluation.
+- Added [appworld.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/appworld.py) with `AppWorldRunConfig`, `AppWorldTaskResult`, `AppWorldRunSummary`, and sequential run orchestration.
+- Added [trace.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/trace.py) for stable JSONL trace recording.
+- Added `leo run --environment appworld` and `leo evaluate --environment appworld` in [main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py).
+- Added an AppWorld-specific prompt supplement and benchmark-profile defaults for environment-backed runs.
+- Added stable artifact outputs per task: final answer, saved output payload, evaluation payload, task result JSON, and run summary JSON.
+- Added AppWorld root handling through the official `appworld.update_root(...)` path so Leo can run against downloaded AppWorld data outside the repo root.
+
+Candidate files:
+- [src/leo/environments/adapters.py](/Users/yuan/Documents/GitHub/leo/src/leo/environments/adapters.py)
+- [src/leo/runs/__init__.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/__init__.py)
+- [src/leo/runs/appworld.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/appworld.py)
+- [src/leo/runs/trace.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/trace.py)
+- [src/leo/cli/main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py)
+- [test/test_appworld_run.py](/Users/yuan/Documents/GitHub/leo/test/test_appworld_run.py)
+
+Verification:
+- The fake-package integration test proves Leo can initialize an AppWorld task, execute multiple environment code steps, save outputs, and evaluate through the generic harness.
+- The batch/result path writes stable per-task artifacts and a run-level summary.
+- A real smoke run completed end-to-end on public AppWorld train task `82e2fac_1` using downloaded AppWorld data under `/tmp/appworld-data`, with Leo artifacts written under `/tmp/leo-appworld-smoke/leo-real-smoke/82e2fac_1`.
+- `pytest` passed with `83 passed, 3 skipped` after this item landed.
+
+### F. Implement Milestone 6 AppWorld MCP And Competitive Hardening
+
+Status: completed on 2026-03-13.
+
+Goal: complete Milestone 6 from [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md) by supporting AppWorld MCP through the same provider architecture and adding enough tracing/replay support to debug benchmark runs.
+
+Implemented:
+- Enabled MCP providers in the `benchmark-environment` capability profile in [profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py).
+- Added registry-level event emission in [registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py) for tool calls, tool results, environment attach/detach, save, and evaluate events.
+- Added tracing LLM support in [appworld.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/appworld.py) so prompts and model responses are captured alongside tool and environment events.
+- Added `leo replay --trace <path>` in [main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py) for single-trace replay/debug summaries.
+- Added AppWorld MCP configuration support in the run harness via `--appworld-mcp-url` or `--appworld-mcp-command`, reusing the existing generic `MCPToolProvider`.
+- Verified an AppWorld MCP-backed run path in [test/test_appworld_run.py](/Users/yuan/Documents/GitHub/leo/test/test_appworld_run.py) without changing agent semantics.
+
+Candidate files:
+- [src/leo/tools/profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py)
+- [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [src/leo/runs/appworld.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/appworld.py)
+- [src/leo/runs/trace.py](/Users/yuan/Documents/GitHub/leo/src/leo/runs/trace.py)
+- [src/leo/cli/main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py)
+- [test/test_appworld_run.py](/Users/yuan/Documents/GitHub/leo/test/test_appworld_run.py)
+- [test/test_cli.py](/Users/yuan/Documents/GitHub/leo/test/test_cli.py)
+
+Verification:
+- AppWorld MCP tools are discovered and invoked through the same registry path as other MCP tools.
+- Leo can run AppWorld tasks through either the direct adapter-backed path or an MCP-backed path without changing the agent loop.
+- Saved JSONL traces contain model requests, model responses, tool calls, tool results, environment events, and final result metadata.
+- `leo replay --trace` summarizes saved traces for single-task debugging.
+- `pytest` passed with `83 passed, 3 skipped` after this item landed.
+
 ## Foundation
 
 ### 0. Add Core Coding-Agent Tools
