@@ -50,7 +50,7 @@ class ReActAgent(Agent):
                 "type": "object",
                 "properties": {
                     "answer": {
-                        "type": ["string", "null"],
+                        "type": ["string", "number", "null"],
                         "description": (
                             "The complete, user-facing final answer. "
                             "For drafting tasks, include the full draft body here. "
@@ -109,9 +109,12 @@ class ReActAgent(Agent):
         answer = parsed_args.get("answer")
         if answer is None:
             return None
-        if not isinstance(answer, str):
-            raise ValueError("final_answer.answer must be a string.")
-        text = answer.strip()
+        if isinstance(answer, (int, float)):
+            text = str(answer)
+        elif isinstance(answer, str):
+            text = answer.strip()
+        else:
+            raise ValueError("final_answer.answer must be a string, number, or null.")
         if not text:
             return None
         return text

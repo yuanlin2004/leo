@@ -91,6 +91,29 @@ def test_react_agent_returns_structured_final_answer_tool_payload() -> None:
     )
 
 
+def test_react_agent_accepts_numeric_final_answer_tool_payload() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final-number",
+                        "final_answer",
+                        json.dumps({"answer": 11}),
+                    )
+                ],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("return a numeric answer", max_iterations=2)
+
+    assert result == "11"
+
+
 def test_react_agent_accepts_tool_requested_auto_final_answer() -> None:
     registry = ToolsRegistry()
     registry.register_tool(
