@@ -86,6 +86,35 @@ Use this skill to run `{script_name}` from the scripts directory.
         script_path.chmod(0o755)
 
 
+def _write_readiness_skill(root: Path) -> None:
+    skill_dir = root / "readiness_skill"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: readiness_skill
+description: Exercise readiness checks.
+---
+Use this skill to run `scripts/check_env.py`.
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "check_env.py").write_text(
+        """import os
+
+
+def main() -> None:
+    token = os.environ["READINESS_TOKEN"]
+    print(token)
+
+
+if __name__ == "__main__":
+    main()
+""",
+        encoding="utf-8",
+    )
+
+
 def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -> None:
     skills_root = tmp_path / ".agents" / "skills"
     _write_skill(skills_root)
@@ -99,6 +128,7 @@ def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -
     assert "activate_skill" in all_tools
     assert "get_skill_resource" in all_tools
     assert "get_skill_requirements" in all_tools
+    assert "check_skill_readiness" in all_tools
     assert "list_skill_commands" in all_tools
     assert "run_skill_command" in all_tools
     assert "echo_tool" not in all_tools
@@ -313,6 +343,81 @@ def test_registry_discovers_commands_from_skill_scripts(tmp_path: Path) -> None:
             "source": "script-reference",
         }
     ]
+
+
+def test_registry_checks_skill_readiness_without_activation(tmp_path: Path, monkeypatch) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_readiness_skill(skills_root)
+    monkeypatch.delenv("READINESS_TOKEN", raising=False)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    readiness = registry.check_skill_readiness("readiness_skill")
+
+    assert readiness["skill_name"] == "readiness_skill"
+    assert readiness["activated"] is False
+    assert readiness["ready"] is False
+    assert readiness["commands"] == [
+        {
+            "name": "check_env",
+            "command_path": "scripts/check_env.py",
+            "execution_mode": "direct",
+            "executable": "python3",
+            "source": "script-reference",
+        }
+    ]
+    assert any(
+        issue["requirement"]["kind"] == "env_var"
+        and issue["requirement"]["name"] == "READINESS_TOKEN"
+        for issue in readiness["blocking_issues"]
+    )
+    assert any("READINESS_TOKEN" in item for item in readiness["suggested_remediation"])
+    assert registry.list_available_skills()[0]["activated"] is False
+
+
+def test_registry_marks_skill_ready_when_env_var_is_present(tmp_path: Path, monkeypatch) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_readiness_skill(skills_root)
+    monkeypatch.setenv("READINESS_TOKEN", "ok")
+
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    readiness = registry.check_skill_readiness("readiness_skill")
+
+    assert readiness["ready"] is True
+    assert readiness["blocking_issues"] == []
+
+
+def test_registry_reports_missing_binary_in_readiness(tmp_path: Path, monkeypatch) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_readiness_skill(skills_root)
+    monkeypatch.setenv("READINESS_TOKEN", "ok")
+    monkeypatch.setattr("leo.tools.registry.shutil.which", lambda _name: None)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+
+    readiness = registry.check_skill_readiness("readiness_skill")
+
+    assert readiness["ready"] is False
+    assert any(
+        issue["requirement"]["kind"] == "binary"
+        and issue["requirement"]["name"] == "python3"
+        for issue in readiness["blocking_issues"]
+    )
+
+
+def test_registry_reports_missing_mcp_server_in_readiness() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills", mcp_servers=[])
+
+    readiness = registry.check_skill_readiness("openai-docs")
+
+    assert readiness["ready"] is False
+    assert any(
+        issue["requirement"]["kind"] == "mcp"
+        and issue["requirement"]["name"] == "openaiDeveloperDocs"
+        for issue in readiness["blocking_issues"]
+    )
+    assert any("openaiDeveloperDocs" in item for item in readiness["suggested_remediation"])
 
 
 def test_registry_runs_direct_skill_command(tmp_path: Path) -> None:

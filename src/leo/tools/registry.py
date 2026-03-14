@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +14,7 @@ from leo.skills import (
 )
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
 from leo.tools.mcp import MCPServerConfig, MCPToolRuntime
+from leo.skills.runtime import probe_tmux_runtime
 
 
 class ToolsRegistryError(Exception):
@@ -159,6 +163,23 @@ class ToolsRegistry:
                 "additionalProperties": False,
             },
             handler=lambda skill_name: self.get_skill_requirements(skill_name),
+            provenance="runtime:core",
+        )
+        self.register_tool(
+            name="check_skill_readiness",
+            description="Assess whether a discovered skill is runnable in the current environment and report blocking issues plus suggested remediation.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The discovered skill name or canonical id to assess.",
+                    }
+                },
+                "required": ["skill_name"],
+                "additionalProperties": False,
+            },
+            handler=lambda skill_name: self.check_skill_readiness(skill_name),
             provenance="runtime:core",
         )
         self.register_tool(
@@ -312,6 +333,117 @@ class ToolsRegistry:
             ]
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
+
+    def check_skill_readiness(self, skill_name: str) -> dict[str, Any]:
+        try:
+            inspection = self._catalog.inspect_skill(skill_name)
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+        blocking_issues: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+        suggested_remediation: list[str] = []
+        mcp_statuses = {item["name"]: item for item in self.list_mcp_servers()}
+
+        def add_blocking(
+            *,
+            requirement: dict[str, Any] | None,
+            message: str,
+            remediation: str,
+        ) -> None:
+            payload: dict[str, Any] = {"message": message}
+            if requirement is not None:
+                payload["requirement"] = requirement
+            blocking_issues.append(payload)
+            if remediation not in suggested_remediation:
+                suggested_remediation.append(remediation)
+
+        def add_warning(
+            *,
+            requirement: dict[str, Any] | None,
+            message: str,
+            remediation: str | None = None,
+        ) -> None:
+            payload: dict[str, Any] = {"message": message}
+            if requirement is not None:
+                payload["requirement"] = requirement
+            warnings.append(payload)
+            if remediation and remediation not in suggested_remediation:
+                suggested_remediation.append(remediation)
+
+        for requirement in inspection.requirements:
+            payload = requirement.to_dict()
+            if requirement.kind == "binary":
+                if requirement.name == "tmux":
+                    available, error = probe_tmux_runtime()
+                    if not available:
+                        add_blocking(
+                            requirement=payload,
+                            message=error or "tmux is unavailable.",
+                            remediation="Install and enable tmux in the current environment.",
+                        )
+                    continue
+
+                if shutil.which(requirement.value) is None:
+                    add_blocking(
+                        requirement=payload,
+                        message=f"Required executable not found: {requirement.value}",
+                        remediation=f"Install `{requirement.value}` and ensure it is on PATH.",
+                    )
+            elif requirement.kind == "env_var":
+                if not str(os.getenv(requirement.name) or "").strip():
+                    add_blocking(
+                        requirement=payload,
+                        message=f"Required environment variable is missing: {requirement.name}",
+                        remediation=f"Set `{requirement.name}` in the environment before running this skill.",
+                    )
+            elif requirement.kind == "mcp":
+                status = mcp_statuses.get(requirement.name)
+                if status is None:
+                    add_blocking(
+                        requirement=payload,
+                        message=f"Required MCP server is not configured: {requirement.name}",
+                        remediation=(
+                            f"Configure MCP server `{requirement.name}` via `--mcp-config`, "
+                            "`LEO_MCP_CONFIG`, or `LEO_MCP_SERVERS`."
+                        ),
+                    )
+                elif not status.get("connected", False):
+                    detail = status.get("error") or "connection failed"
+                    add_blocking(
+                        requirement=payload,
+                        message=f"Required MCP server is not connected: {requirement.name} ({detail})",
+                        remediation=f"Fix the MCP configuration or availability for `{requirement.name}`.",
+                    )
+            elif requirement.kind == "platform":
+                platform_value = requirement.value.lower()
+                current_platform = sys.platform.lower()
+                if platform_value and platform_value not in current_platform:
+                    add_warning(
+                        requirement=payload,
+                        message=(
+                            f"Skill expects platform {requirement.value!r}; current platform is {sys.platform!r}."
+                        ),
+                        remediation="Run this skill on a compatible platform or verify cross-platform support.",
+                    )
+            elif requirement.kind in {"auth", "compatibility"}:
+                add_warning(
+                    requirement=payload,
+                    message=f"Manual validation recommended for {requirement.kind}: {requirement.value}",
+                )
+
+        return {
+            "skill_id": inspection.manifest.canonical_id,
+            "skill_name": inspection.manifest.name,
+            "activated": inspection.manifest.canonical_id in self.get_activated_skill_ids(),
+            "loadable": inspection.manifest.loadable,
+            "ready": not blocking_issues,
+            "requirements": [item.to_dict() for item in inspection.requirements],
+            "commands": [item.to_dict() for item in inspection.commands],
+            "blocking_issues": blocking_issues,
+            "warnings": warnings,
+            "suggested_remediation": suggested_remediation,
+        }
 
     def list_skill_commands(self, skill_name: str) -> list[dict[str, Any]]:
         try:

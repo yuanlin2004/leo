@@ -77,25 +77,30 @@ Verification:
 
 ### 2. Add Skill Readiness / Preflight Checks
 
+Status: completed on 2026-03-13.
+
 Goal: let Leo answer whether a skill is runnable in the current environment before attempting execution.
 
-Tasks:
-- Add a tool such as `check_skill_readiness`.
-- Validate binaries declared or inferred for skill commands.
-- Validate required env vars.
-- Validate MCP dependencies once MCP runtime support exists.
-- Include auth/platform compatibility hints where available.
-- Return a compact report with `ready`, `blocking_issues`, and `suggested_remediation`.
+Implemented:
+- Added `check_skill_readiness` as a core tool.
+- Added side-effect-free skill inspection so Leo can assess readiness without activating the skill.
+- Validate inferred or declared binaries for skill commands.
+- Validate required environment variables.
+- Validate required MCP servers against current MCP runtime status.
+- Surface compatibility, auth, and platform constraints as warnings or manual checks when they are not machine-verifiable.
+- Return a structured report with `ready`, `blocking_issues`, `warnings`, `commands`, and `suggested_remediation`.
 
 Candidate files:
 - [src/leo/skills/catalog.py](/Users/yuan/Documents/GitHub/leo/src/leo/skills/catalog.py)
 - [src/leo/skills/runtime.py](/Users/yuan/Documents/GitHub/leo/src/leo/skills/runtime.py)
 - [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [test/test_skills_registry.py](/Users/yuan/Documents/GitHub/leo/test/test_skills_registry.py)
 
-Definition of done:
+Verification:
 - The model can call one tool to assess whether a skill can run here.
 - Reports distinguish hard blockers from optional compatibility notes.
 - Tests cover binary/env/MCP failure cases.
+- `pytest` passed with `67 passed, 3 skipped` when this item was implemented.
 
 ## Priority 2
 

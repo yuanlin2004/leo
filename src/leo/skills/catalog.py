@@ -148,6 +148,16 @@ class ActivatedSkill:
     commands: tuple[SkillCommand, ...] = ()
 
 
+@dataclass(frozen=True)
+class SkillInspectionResult:
+    manifest: SkillManifest
+    instructions: str
+    tools: tuple[SkillToolContribution, ...]
+    resources: tuple[str, ...]
+    requirements: tuple[SkillRequirement, ...]
+    commands: tuple[SkillCommand, ...]
+
+
 def parse_frontmatter_and_body(content: str) -> tuple[dict[str, Any], str]:
     text = content.lstrip()
     if not text.startswith(_FRONTMATTER_DELIM):
@@ -965,17 +975,8 @@ class SkillsCatalog:
                 already_activated=True,
             )
 
-        metadata, body = parse_frontmatter_and_body(
-            manifest.path.read_text(encoding="utf-8")
-        )
-        if not isinstance(metadata, dict):
-            raise SkillsCatalogError(f"Invalid skill manifest for {manifest.name}.")
-
-        instructions = body.strip()
-        tools = self._load_contributed_tools(manifest)
-        resources = self._discover_activation_resources(manifest, body)
-        commands = self._discover_commands(manifest, body, resources)
-        requirements = self._discover_requirements(manifest, body, resources, commands)
+        inspection = self.inspect_skill(skill_name)
+        tools = inspection.tools
 
         occupied_names = set(active_runtime_tool_names or set())
         duplicate_with_runtime = [
@@ -1003,22 +1004,50 @@ class SkillsCatalog:
 
         activated = ActivatedSkill(
             manifest=manifest,
-            instructions=instructions,
+            instructions=inspection.instructions,
             tool_names=tuple(tool.name for tool in tools),
-            resources=resources,
-            requirements=requirements,
-            commands=commands,
+            resources=inspection.resources,
+            requirements=inspection.requirements,
+            commands=inspection.commands,
         )
         self._activated_skills[manifest.canonical_id] = activated
         return SkillActivationResult(
             skill_id=manifest.canonical_id,
             name=manifest.name,
+            instructions=inspection.instructions,
+            tools=tools,
+            resources=inspection.resources,
+            requirements=inspection.requirements,
+            commands=inspection.commands,
+            already_activated=False,
+        )
+
+    def inspect_skill(self, skill_name: str) -> SkillInspectionResult:
+        manifest = self.get_skill_manifest(skill_name)
+        if not manifest.loadable:
+            raise SkillsCatalogError(
+                manifest.validation_error
+                or f"Skill {manifest.name} is not loadable in strict AgentSkills mode."
+            )
+
+        metadata, body = parse_frontmatter_and_body(
+            manifest.path.read_text(encoding="utf-8")
+        )
+        if not isinstance(metadata, dict):
+            raise SkillsCatalogError(f"Invalid skill manifest for {manifest.name}.")
+
+        instructions = body.strip()
+        tools = self._load_contributed_tools(manifest)
+        resources = self._discover_activation_resources(manifest, body)
+        commands = self._discover_commands(manifest, body, resources)
+        requirements = self._discover_requirements(manifest, body, resources, commands)
+        return SkillInspectionResult(
+            manifest=manifest,
             instructions=instructions,
             tools=tools,
             resources=resources,
             requirements=requirements,
             commands=commands,
-            already_activated=False,
         )
 
     def deactivate_skill(self, skill_name: str) -> None:
