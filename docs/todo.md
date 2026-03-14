@@ -6,6 +6,8 @@ Date: 2026-03-13
 
 ### 0. Add Core Coding-Agent Tools
 
+Status: completed on 2026-03-13.
+
 Goal: give Leo a minimal primitive toolset for coding workflows before layering higher-level skills on top.
 
 Rationale:
@@ -13,56 +15,65 @@ Rationale:
 - Skills should describe workflows and domain procedures, not replace basic filesystem and process access.
 - `tmux` should be exposed as a persistent session primitive after basic shell/process support exists.
 
-Tasks:
-- Add `read_file` as a core tool with safe path checks, optional line ranges, and output size limits.
-- Add `edit_file` as a core tool using patch-based or search/replace-based updates instead of unconstrained rewrites.
-- Add `write_file` as a core tool for file creation and explicit full overwrites with clear guard rails.
-- Add `run_shell` or `bash` as a core tool for command execution.
-- Add a small `tmux` session API rather than a single monolithic tool.
-- Keep these tools available independent of skill activation.
-
-Suggested tmux tool surface:
+Implemented:
+- Added `read_file` with workspace path checks, optional line ranges, and truncation limits.
+- Added `edit_file` with guarded search/replace semantics.
+- Added `write_file` with explicit overwrite protection.
+- Added `run_shell` for workspace-scoped command execution.
+- Added managed tmux session tools:
 - `tmux_start_session`
 - `tmux_send_keys`
 - `tmux_capture_pane`
 - `tmux_kill_session`
+- Registered these as core tools in the runtime, independent of skill activation.
 
 Candidate files:
 - [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
 - [src/leo/tools/__init__.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/__init__.py)
-- New core tool modules under `src/leo/tools/`
+- [src/leo/tools/core.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/core.py)
 - [src/leo/skills/runtime.py](/Users/yuan/Documents/GitHub/leo/src/leo/skills/runtime.py)
 - [test/test_simple_agent.py](/Users/yuan/Documents/GitHub/leo/test/test_simple_agent.py)
 - [test/test_react_agent.py](/Users/yuan/Documents/GitHub/leo/test/test_react_agent.py)
+- [test/test_core_tools.py](/Users/yuan/Documents/GitHub/leo/test/test_core_tools.py)
 
-Definition of done:
+Verification:
 - Leo can inspect files, modify files, and execute shell commands without relying on skills.
 - Persistent terminal workflows can be managed through dedicated `tmux` session tools.
 - Tests cover path restrictions, truncation behavior, edit safety, shell failures, and tmux session lifecycle.
+- `pytest` passed with `55 passed, 2 skipped` when this item was implemented.
 
 ## Priority 1
 
 ### 1. Add Real MCP Runtime Support
 
+Status: completed on 2026-03-13.
+
 Goal: close the gap between declaring MCP dependencies and actually using MCP-backed tools.
 
-Tasks:
-- Add an `MCPToolProvider` that can connect to configured MCP servers, discover tool schemas, and invoke tools through the same registry path as local tools.
-- Define a Leo-side MCP server configuration model and loading path.
-- Register MCP tools with provenance metadata so they are distinguishable from local and skill-contributed tools.
-- Surface connection and schema-load failures as normal tool/runtime errors instead of silent skips.
-- Keep `get_skill_requirements` as the gating surface so the model can inspect MCP requirements before use.
+Implemented:
+- Added an `MCPToolRuntime` and server config model with stdio and HTTP transport support.
+- Added HTTP response handling for both JSON and SSE (`text/event-stream`) MCP responses.
+- Added MCP config loading from `--mcp-config`, `LEO_MCP_CONFIG`, or inline `LEO_MCP_SERVERS`.
+- Registered discovered MCP tools through the normal tool registry path with `mcp:<server>` provenance.
+- Added `list_mcp_servers` to expose connection status, discovered tools, and server metadata.
+- Surface connection, protocol, and tool-call failures as normal runtime errors.
+- Added an opt-in live integration test against `https://mcp.deepwiki.com/mcp`.
+- Kept `get_skill_requirements` as the skill-side dependency surface.
 
 Candidate files:
 - [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
 - [src/leo/tools/__init__.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/__init__.py)
-- New provider module under `src/leo/tools/`
+- [src/leo/tools/mcp.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/mcp.py)
+- [src/leo/cli/main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py)
+- [test/test_mcp_tools.py](/Users/yuan/Documents/GitHub/leo/test/test_mcp_tools.py)
 - [docs/leo-skills-full-support-requirements-and-design.md](/Users/yuan/Documents/GitHub/leo/docs/leo-skills-full-support-requirements-and-design.md)
 
-Definition of done:
+Verification:
 - MCP-backed tools can be discovered and invoked from the normal agent tool loop.
 - Missing or misconfigured MCP servers produce actionable errors.
 - Tests cover discovery, invocation, and failure handling.
+- `pytest` passed with `63 passed, 3 skipped` after HTTP support and live integration coverage were added.
+- The live DeepWiki MCP integration test passed when run with `LEO_RUN_LIVE_MCP_TESTS=1`.
 
 ### 2. Add Skill Readiness / Preflight Checks
 

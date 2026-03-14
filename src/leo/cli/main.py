@@ -60,6 +60,11 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         help="Path to skills root directory.",
     )
     parser.add_argument(
+        "--mcp-config",
+        default=os.getenv("LEO_MCP_CONFIG"),
+        help="Path to a JSON file containing MCP server configurations.",
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=10,
@@ -119,6 +124,7 @@ def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
     registry = ToolsRegistry(
         skills_root=args.skills_root,
         user_skills_root=Path.home() / ".leo" / "skills",
+        mcp_config_path=args.mcp_config,
     )
     llm = LeoLLMClient(
         model=args.model,
@@ -195,6 +201,7 @@ def _format_config(args: argparse.Namespace) -> str:
             f"- temperature: {args.temperature}",
             f"- max_iterations: {args.max_iterations}",
             f"- skills_root: {args.skills_root}",
+            f"- mcp_config: {args.mcp_config or '(none)'}",
             f"- log_level: {args.log_level}",
         ]
     )

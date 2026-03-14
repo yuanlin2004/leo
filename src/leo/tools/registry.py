@@ -10,6 +10,7 @@ from leo.skills import (
     SkillsCatalogError,
 )
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
+from leo.tools.mcp import MCPServerConfig, MCPToolRuntime
 
 
 class ToolsRegistryError(Exception):
@@ -38,14 +39,21 @@ class ToolsRegistry:
         *,
         user_skills_root: str | Path | None = None,
         workspace_root: str | Path | None = None,
+        mcp_servers: list[MCPServerConfig] | None = None,
+        mcp_config_path: str | Path | None = None,
     ) -> None:
         self._tools: dict[str, RegisteredTool] = {}
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
+        self._mcp_runtime = MCPToolRuntime.from_sources(
+            configs=mcp_servers,
+            config_path=mcp_config_path,
+        )
         self._catalog = SkillsCatalog(
             project_root=skills_root,
             user_root=user_skills_root,
         )
         self._register_core_tools()
+        self._register_mcp_tools()
         self._register_meta_tools()
 
     def _register_core_tools(self) -> None:
@@ -60,7 +68,28 @@ class ToolsRegistry:
                 provenance="runtime:core",
             )
 
+    def _register_mcp_tools(self) -> None:
+        for tool in self._mcp_runtime.list_tool_definitions():
+            self.register_tool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.input_schema,
+                handler=lambda _tool=tool, **kwargs: self._mcp_runtime.invoke_tool(
+                    _tool.server_name,
+                    _tool.name,
+                    **kwargs,
+                ),
+                provenance=f"mcp:{tool.server_name}",
+            )
+
     def _register_meta_tools(self) -> None:
+        self.register_tool(
+            name="list_mcp_servers",
+            description="List configured MCP servers, their connection status, and discovered tool names.",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda: self.list_mcp_servers(),
+            provenance="runtime:core",
+        )
         self.register_tool(
             name="list_available_skills",
             description="List discovered skills with compact metadata only.",
@@ -237,6 +266,9 @@ class ToolsRegistry:
 
     def list_available_skills(self) -> list[dict[str, Any]]:
         return [summary.to_dict() for summary in self._catalog.list_available_skills()]
+
+    def list_mcp_servers(self) -> list[dict[str, Any]]:
+        return self._mcp_runtime.list_server_statuses()
 
     def get_skill_summary(self, skill_name: str) -> dict[str, Any]:
         return self._catalog.get_skill_summary(skill_name).to_dict()

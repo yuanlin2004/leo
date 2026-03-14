@@ -24,6 +24,7 @@ class FakeToolsRegistry:
         self.activated_skill_ids: list[str] = []
         self.restored_skill_ids: list[list[str]] = []
         self.tools = {
+            "list_mcp_servers": "List configured MCP servers, their connection status, and discovered tool names.",
             "list_available_skills": "List discovered skills with compact metadata only.",
             "activate_skill": "Activate a skill and register its contributed tools.",
             "get_skill_resource": "Load a bundled skill resource.",
@@ -135,9 +136,16 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class StubRegistry:
-        def __init__(self, skills_root=None, *, user_skills_root=None) -> None:
+        def __init__(
+            self,
+            skills_root=None,
+            *,
+            user_skills_root=None,
+            mcp_config_path=None,
+        ) -> None:
             captured["skills_root"] = skills_root
             captured["user_skills_root"] = user_skills_root
+            captured["mcp_config_path"] = mcp_config_path
 
         def get_all_tools(self) -> dict[str, str]:
             return {}
@@ -166,6 +174,7 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
 
     assert captured["skills_root"] == "/tmp/ext-skills"
     assert captured["user_skills_root"] == fake_home / ".leo" / "skills"
+    assert captured["mcp_config_path"] is None
 
 
 def test_run_ask_uses_agent_run() -> None:
