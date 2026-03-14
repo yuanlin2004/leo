@@ -55,7 +55,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("LEO_MODEL", "openai/gpt-4o-mini"),
+        default=os.getenv("LEO_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
         help="Model ID for the selected provider.",
     )
     parser.add_argument(
@@ -221,7 +221,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Run one or more environment-backed tasks non-interactively.",
     )
     _add_shared_options(run_parser)
-    run_parser.set_defaults(profile="benchmark-environment")
+    run_parser.set_defaults(profile="benchmark-environment", temperature=0.0)
     _add_environment_options(run_parser)
 
     evaluate_parser = subparsers.add_parser(
@@ -229,7 +229,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Run and evaluate one or more environment-backed tasks.",
     )
     _add_shared_options(evaluate_parser)
-    evaluate_parser.set_defaults(profile="benchmark-environment")
+    evaluate_parser.set_defaults(profile="benchmark-environment", temperature=0.0)
     _add_environment_options(evaluate_parser)
 
     replay_parser = subparsers.add_parser(

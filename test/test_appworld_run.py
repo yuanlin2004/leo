@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from leo.agents import ReActAgent
 from leo.runs import AppWorldRunConfig, replay_trace, run_appworld_tasks
-from leo.runs.appworld import TracingLLM
+from leo.runs.appworld import APPWORLD_RUN_PROMPT_SUPPLEMENT, TracingLLM
 from test.fakes import FakeLLM, FakeToolCall
 
 
@@ -279,3 +279,14 @@ def test_run_appworld_tasks_with_mcp_tools(
     trace_summary = replay_trace(result.trace_path)
     assert trace_summary["event_types"]["tool_call"] >= 1
     assert trace_summary["event_types"]["tool_result"] >= 1
+
+
+def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
+    assert "`apis`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "inventing `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "list_appworld_apis" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "describe_appworld_api" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "task_strategy_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "example_code" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT

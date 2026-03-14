@@ -24,7 +24,7 @@ This sample demonstrates a multi-step ReAct flow with tool use:
 ```bash
 python samples/react_web_search_e2e.py \
   --provider openrouter \
-  --model openai/gpt-4o-mini
+  --model nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 Optional:
@@ -65,7 +65,7 @@ Run:
 ```bash
 python samples/react_news_brief_e2e.py \
   --provider openrouter \
-  --model openai/gpt-4o-mini
+  --model nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 Verbose trace logging:

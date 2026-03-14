@@ -108,6 +108,15 @@ def test_parse_args_for_ask_command() -> None:
     assert args.max_iterations == 10
 
 
+def test_parse_args_uses_nemotron_as_default_model(monkeypatch) -> None:
+    monkeypatch.delenv("LEO_MODEL", raising=False)
+    monkeypatch.chdir(Path("/tmp"))
+
+    args = parse_args(["ask", "hello"])
+
+    assert args.model == "nvidia/nemotron-3-super-120b-a12b:free"
+
+
 def test_parse_args_for_run_command_defaults_to_benchmark_environment() -> None:
     args = parse_args(["run", "--task-id", "task-1"])
 
@@ -115,6 +124,7 @@ def test_parse_args_for_run_command_defaults_to_benchmark_environment() -> None:
     assert args.environment == "appworld"
     assert args.task_id == ["task-1"]
     assert args.profile == "benchmark-environment"
+    assert args.temperature == 0.0
 
 
 def test_parse_args_for_replay_command() -> None:

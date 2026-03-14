@@ -41,7 +41,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("LEO_MODEL", "openai/gpt-4o-mini"),
+        default=os.getenv("LEO_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
         help="Model ID for the selected provider.",
     )
     parser.add_argument(

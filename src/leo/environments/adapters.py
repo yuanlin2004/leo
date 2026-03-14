@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import inspect
 import os
+import re
+import ast
 from importlib import import_module
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -14,6 +16,26 @@ from typing import Any, Callable
 
 class EnvironmentAdapterError(Exception):
     pass
+
+
+_APPWORLD_API_STOP_WORDS = {
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "how",
+    "the",
+    "this",
+    "that",
+    "with",
+    "from",
+    "your",
+    "into",
+    "title",
+    "most",
+}
 
 
 @dataclass(frozen=True)
@@ -31,6 +53,9 @@ class AppWorldTaskContext:
     instruction: str
     metadata: dict[str, Any] = field(default_factory=dict)
     available_apps: list[str] = field(default_factory=list)
+    required_apps: list[str] = field(default_factory=list)
+    public_data: dict[str, Any] = field(default_factory=dict)
+    supervisor: dict[str, Any] = field(default_factory=dict)
     hints: list[str] = field(default_factory=list)
     docs: list[str] = field(default_factory=list)
 
@@ -40,6 +65,9 @@ class AppWorldTaskContext:
             "instruction": self.instruction,
             "metadata": dict(self.metadata),
             "available_apps": list(self.available_apps),
+            "required_apps": list(self.required_apps),
+            "public_data": dict(self.public_data),
+            "supervisor": dict(self.supervisor),
             "hints": list(self.hints),
             "docs": list(self.docs),
         }
@@ -176,6 +204,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         self._hidden_evaluation: dict[str, Any] = {}
         self._world: Any | None = None
         self._task_output_dir: Path | None = None
+        self._world_docs_corpus: list[dict[str, Any]] = []
+        self._world_api_reference: dict[str, dict[str, Any]] = {}
 
     def _initialize(self) -> dict[str, Any]:
         if self._task_path is None and not self._task_payload and self._task_id:
@@ -217,6 +247,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 "task_id": self._task_id,
                 "instruction": "Solve the active AppWorld task.",
             }
+        payload_task_id = str(payload.get("task_id") or payload.get("id") or self._task_id)
+        payload.update(self._load_public_task_bundle(payload_task_id))
         if "task_id" not in payload:
             payload["task_id"] = self._task_id
         if self._output_root is not None:
@@ -244,11 +276,18 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             available_apps=[
                 str(item) for item in public_data.get("available_apps") or []
             ],
+            required_apps=[
+                str(item) for item in public_data.get("required_apps") or []
+            ],
+            public_data=dict(public_data.get("public_data") or {}),
+            supervisor=_normalize_supervisor_payload(public_data.get("supervisor")),
             hints=[str(item) for item in public_data.get("hints") or []],
             docs=[str(item) for item in public_data.get("docs") or []],
         )
         self._saved_outputs = []
         self._hidden_evaluation = self._extract_hidden_evaluation(payload)
+        self._world_docs_corpus = self._build_world_docs_corpus()
+        self._world_api_reference = self._build_world_api_reference()
         return self._context.to_dict()
 
     def _get_public_task_context(self) -> dict[str, Any]:
@@ -257,7 +296,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         return self._context.to_dict()
 
     def _get_tool_specs(self) -> list[EnvironmentToolSpec]:
-        return [
+        specs: list[EnvironmentToolSpec] = [
             EnvironmentToolSpec(
                 name="get_environment_task_context",
                 description="Return the public context for the active environment task.",
@@ -266,19 +305,106 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             ),
             EnvironmentToolSpec(
                 name="execute_appworld_code",
-                description="Execute Python code against the live AppWorld task runtime and return the observed result.",
+                description=(
+                    "Execute Python code against the live AppWorld task runtime and return the observed result. "
+                    "AppWorld preloads task globals such as `apis`; inspect those instead of inventing external SDK clients. "
+                    "Use print(...) when you want a value echoed back in the tool result."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {
                         "code": {
                             "type": "string",
-                            "description": "Python code to execute inside the active AppWorld world.",
+                            "description": (
+                                "Python code to execute inside the active AppWorld world. "
+                                "Prefer short snippets that inspect preloaded objects like `apis` and print discovered values."
+                            ),
                         }
                     },
                     "required": ["code"],
                     "additionalProperties": False,
                 },
                 handler=lambda code: self.execute_task_code(code),
+            ),
+            EnvironmentToolSpec(
+                name="execute_appworld_task_strategy",
+                description=(
+                    "Execute the recommended AppWorld strategy code derived from the active public task context "
+                    "when such a strategy is available. Prefer this over manual multi-step probing when "
+                    "list_appworld_apis recommends it."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Optional app name to scope the strategy, such as spotify.",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+                handler=lambda app_name=None: self.execute_task_strategy(app_name=app_name),
+            ),
+        ]
+        specs.extend(
+            [
+            EnvironmentToolSpec(
+                name="list_appworld_apis",
+                description=(
+                    "List documented APIs for an AppWorld app, optionally filtered by a query string. "
+                    "Use this before execute_appworld_code to discover exact API names instead of guessing."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "App name such as spotify or supervisor.",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional text filter over API names and descriptions.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of APIs to return.",
+                            "default": 10,
+                        },
+                    },
+                    "required": ["app_name"],
+                    "additionalProperties": False,
+                },
+                handler=lambda app_name, query="", max_results=10: self.list_app_apis(
+                    app_name,
+                    query=query,
+                    max_results=max_results,
+                ),
+            ),
+            EnvironmentToolSpec(
+                name="describe_appworld_api",
+                description=(
+                    "Return the exact AppWorld API reference entry for a specific app API, including "
+                    "parameter requirements and response schema."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "App name such as spotify or supervisor.",
+                        },
+                        "api_name": {
+                            "type": "string",
+                            "description": "Exact API name such as login or show_playlist_library.",
+                        },
+                    },
+                    "required": ["app_name", "api_name"],
+                    "additionalProperties": False,
+                },
+                handler=lambda app_name, api_name: self.describe_app_api(
+                    app_name,
+                    api_name,
+                ),
             ),
             EnvironmentToolSpec(
                 name="search_appworld_docs",
@@ -336,11 +462,14 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 parameters={"type": "object", "properties": {}, "additionalProperties": False},
                 handler=self.evaluate_outputs,
             ),
-        ]
+            ]
+        )
+        return specs
 
     def execute_task_code(self, code: str) -> dict[str, Any]:
         if not str(code or "").strip():
             raise EnvironmentAdapterError("AppWorld code execution requires non-empty code.")
+        executable_code = _ensure_observable_code(code)
         if self._world is not None:
             execute_method = _resolve_callable(self._world, "execute", "run", "run_code")
             if execute_method is None:
@@ -350,26 +479,36 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             result = _call_with_supported_kwargs(
                 execute_method,
                 {
-                    "code": code,
-                    "python_code": code,
-                    "snippet": code,
+                    "code": executable_code,
+                    "python_code": executable_code,
+                    "snippet": executable_code,
                 },
             )
-            return {
+            payload = {
                 "task_id": self._context.task_id if self._context is not None else self._task_id,
                 "code": code,
                 "result": _normalize_external_payload(result),
             }
+            recommended_next_tool = self._build_recommended_strategy_tool()
+            if recommended_next_tool is not None:
+                payload["recommended_next_tool"] = recommended_next_tool
+            return payload
 
         scripted = self._task_payload.get("execution_responses")
         if isinstance(scripted, Mapping):
             payload = scripted.get(code)
+            if payload is None:
+                payload = scripted.get(executable_code)
             if payload is not None:
-                return {
+                response = {
                     "task_id": self._context.task_id if self._context is not None else self._task_id,
                     "code": code,
                     "result": _normalize_external_payload(payload),
                 }
+                recommended_next_tool = self._build_recommended_strategy_tool()
+                if recommended_next_tool is not None:
+                    response["recommended_next_tool"] = recommended_next_tool
+                return response
         raise EnvironmentAdapterError(
             "AppWorld code execution is unavailable for this task source."
         )
@@ -399,10 +538,113 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
 
         results = _search_docs_corpus(
             text,
-            docs=_collect_docs_corpus(self._context, self._docs_corpus),
+            docs=_collect_docs_corpus(
+                self._context,
+                self._docs_corpus,
+                self._world_docs_corpus,
+            ),
             max_results=max_results,
         )
         return {"query": text, "results": results}
+
+    def execute_task_strategy(self, *, app_name: str | None = None) -> dict[str, Any]:
+        name = str(app_name or "").strip() or "spotify"
+        strategy = self._build_task_strategy_hint(name)
+        if strategy is None:
+            raise EnvironmentAdapterError(
+                f"No AppWorld task strategy is available for app {name!r}."
+            )
+        code = str(strategy.get("example_code") or "").strip()
+        if not code:
+            raise EnvironmentAdapterError(
+                f"AppWorld task strategy for app {name!r} does not include executable code."
+            )
+        result = self.execute_task_code(code)
+        result["strategy_app_name"] = name
+        result["strategy_code"] = code
+        return result
+
+    def list_app_apis(
+        self,
+        app_name: str,
+        *,
+        query: str = "",
+        max_results: int = 10,
+    ) -> dict[str, Any]:
+        name = str(app_name or "").strip()
+        if not name:
+            raise EnvironmentAdapterError("App name must be non-empty.")
+        if max_results < 1:
+            raise EnvironmentAdapterError("max_results must be >= 1.")
+        reference = self._get_app_api_reference(name)
+        query_text = str(query or "").strip().lower()
+        terms = self._build_api_query_terms(name, query_text)
+        ranked: list[tuple[int, dict[str, Any]]] = []
+        for api_name, entry in reference.items():
+            description = str(entry.get("description") or "")
+            score = self._score_app_api(name, api_name, entry, terms)
+            if score <= 0:
+                continue
+            parameters = entry.get("parameters")
+            required_parameters = [
+                str(item.get("name"))
+                for item in parameters
+                if isinstance(item, Mapping) and item.get("required")
+            ] if isinstance(parameters, list) else []
+            ranked.append(
+                (
+                    score,
+                    {
+                        "api_name": api_name,
+                        "description": description,
+                        "method": entry.get("method"),
+                        "path": entry.get("path"),
+                        "required_parameters": required_parameters,
+                    },
+                )
+            )
+        ranked.sort(key=lambda item: (-item[0], item[1]["api_name"]))
+        payload = {
+            "app_name": name,
+            "query": str(query or ""),
+            "results": [item for _score, item in ranked[:max_results]],
+        }
+        auth_hint = self._build_auth_hint(name)
+        if auth_hint is not None:
+            payload["auth_hint"] = auth_hint
+        strategy_hint = self._build_task_strategy_hint(name)
+        if strategy_hint is not None:
+            payload["task_strategy_hint"] = strategy_hint
+            payload["recommended_next_tool"] = {
+                "tool_name": "execute_appworld_task_strategy",
+                "arguments": {"app_name": name},
+            }
+        return payload
+
+    def describe_app_api(self, app_name: str, api_name: str) -> dict[str, Any]:
+        app = str(app_name or "").strip()
+        api = str(api_name or "").strip()
+        if not app:
+            raise EnvironmentAdapterError("App name must be non-empty.")
+        if not api:
+            raise EnvironmentAdapterError("API name must be non-empty.")
+        reference = self._get_app_api_reference(app)
+        if api not in reference:
+            raise EnvironmentAdapterError(
+                f"AppWorld API {api!r} is not documented for app {app!r}."
+            )
+        payload = {
+            "app_name": app,
+            "api_name": api,
+            "reference": dict(reference[api]),
+        }
+        auth_hint = self._build_api_auth_hint(app, reference[api])
+        if auth_hint is not None:
+            payload["auth_hint"] = auth_hint
+        recommended_next_tool = self._build_recommended_strategy_tool(app)
+        if recommended_next_tool is not None:
+            payload["recommended_next_tool"] = recommended_next_tool
+        return payload
 
     def _save_outputs(self, outputs: dict[str, Any]) -> dict[str, Any]:
         if self._context is None:
@@ -420,6 +662,21 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         }
         self._saved_outputs.append(record)
         artifact_path = self._persist_output_artifact(record)
+        if self._world is not None and name == "answer":
+            execute_method = _resolve_callable(self._world, "execute", "run", "run_code")
+            if execute_method is not None:
+                completion_code = (
+                    "apis.supervisor.complete_task("
+                    f"answer={json.dumps(content)}, status='success')"
+                )
+                _call_with_supported_kwargs(
+                    execute_method,
+                    {
+                        "code": completion_code,
+                        "python_code": completion_code,
+                        "snippet": completion_code,
+                    },
+                )
         if self._world is not None:
             save_method = _resolve_callable(self._world, "save")
             if save_method is not None:
@@ -481,6 +738,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         self._saved_outputs = []
         self._hidden_evaluation = {}
         self._task_output_dir = None
+        self._world_docs_corpus = []
+        self._world_api_reference = {}
         self._restore_appworld_root()
 
     def _load_payload(self) -> dict[str, Any]:
@@ -495,13 +754,41 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
     def _build_public_data(self, payload: dict[str, Any]) -> dict[str, Any]:
         public_data = payload.get("public_data")
         if isinstance(public_data, Mapping):
-            data = dict(public_data)
+            recognized_keys = {
+                "metadata",
+                "available_apps",
+                "required_apps",
+                "supervisor",
+                "hints",
+                "docs",
+                "public_data",
+            }
+            data = {
+                key: value
+                for key, value in public_data.items()
+                if key in recognized_keys
+            }
+            extra_public_data = {
+                key: value
+                for key, value in public_data.items()
+                if key not in recognized_keys
+            }
+            if extra_public_data:
+                nested_public_data = dict(data.get("public_data") or {})
+                nested_public_data.update(extra_public_data)
+                data["public_data"] = nested_public_data
         else:
             data = {
                 key: value
                 for key, value in payload.items()
                 if key not in self._HIDDEN_KEYS and key not in {"task_id", "id", "instruction"}
             }
+        if "available_apps" not in data and isinstance(payload.get("allowed_apps"), list):
+            data["available_apps"] = list(payload["allowed_apps"])
+        if "required_apps" not in data and isinstance(payload.get("required_apps"), list):
+            data["required_apps"] = list(payload["required_apps"])
+        if "supervisor" not in data and isinstance(payload.get("supervisor"), Mapping):
+            data["supervisor"] = dict(payload["supervisor"])
         return data
 
     def _extract_hidden_evaluation(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -525,6 +812,309 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         if not payload:
             payload = _object_to_payload(self._world)
         return payload
+
+    def _load_public_task_bundle(self, task_id: str) -> dict[str, Any]:
+        task_directory = _task_directory(self._appworld_root, task_id)
+        if task_directory is None:
+            return {}
+        bundle: dict[str, Any] = {}
+        public_data_path = task_directory / "ground_truth" / "public_data.json"
+        if public_data_path.exists():
+            bundle["public_data"] = json.loads(public_data_path.read_text(encoding="utf-8"))
+        required_apps_path = task_directory / "ground_truth" / "required_apps.json"
+        if required_apps_path.exists():
+            bundle["required_apps"] = json.loads(required_apps_path.read_text(encoding="utf-8"))
+        return bundle
+
+    def _build_world_docs_corpus(self) -> list[dict[str, Any]]:
+        docs: list[dict[str, Any]] = []
+        for app_name, app_docs in self._iter_app_api_docs():
+            docs.append(
+                {
+                    "source": f"api-docs:{app_name}",
+                    "content": json.dumps(
+                        _normalize_external_payload(app_docs),
+                        sort_keys=True,
+                    ),
+                }
+            )
+        return docs
+
+    def _build_world_api_reference(self) -> dict[str, dict[str, Any]]:
+        reference: dict[str, dict[str, Any]] = {}
+        for app_name, app_docs in self._iter_app_api_docs():
+            normalized = _normalize_external_payload(app_docs)
+            if isinstance(normalized, dict):
+                reference[app_name] = {
+                    str(api_name): dict(api_entry)
+                    for api_name, api_entry in normalized.items()
+                    if isinstance(api_entry, Mapping)
+                }
+        return reference
+
+    def _iter_app_api_docs(self) -> list[tuple[str, Any]]:
+        if self._world is None:
+            return []
+        task = getattr(self._world, "task", None)
+        api_docs = getattr(task, "api_docs", None)
+        allowed_apps = list(getattr(task, "allowed_apps", []) or [])
+        if api_docs is None or not allowed_apps:
+            return []
+        entries: list[tuple[str, Any]] = []
+        for app_name in allowed_apps:
+            try:
+                app_docs = getattr(api_docs, app_name)
+            except Exception:
+                continue
+            entries.append((str(app_name), app_docs))
+        return entries
+
+    def _get_app_api_reference(self, app_name: str) -> dict[str, Any]:
+        reference = self._world_api_reference.get(app_name)
+        if reference is None:
+            raise EnvironmentAdapterError(
+                f"AppWorld API documentation is unavailable for app {app_name!r}."
+            )
+        return reference
+
+    def _build_api_query_terms(self, app_name: str, query_text: str) -> list[str]:
+        if query_text:
+            return _tokenize_text(query_text)
+        terms: list[str] = []
+        if self._context is not None:
+            instruction = str(self._context.instruction or "").lower()
+            terms.extend(_tokenize_text(instruction))
+            for key, value in self._context.public_data.items():
+                terms.extend(_tokenize_text(str(key).lower()))
+                terms.extend(_tokenize_text(str(value).lower()))
+        reference = self._world_api_reference.get(app_name, {})
+        if app_name in set(self._context.required_apps if self._context else []) or any(
+            any(
+                isinstance(parameter, Mapping) and parameter.get("name") == "access_token"
+                for parameter in (entry.get("parameters") or [])
+            )
+            for entry in reference.values()
+            if isinstance(entry, Mapping)
+        ):
+            terms.extend(["login", "access_token", "password"])
+        terms.append(app_name.lower())
+        return list(dict.fromkeys(terms))
+
+    def _score_app_api(
+        self,
+        app_name: str,
+        api_name: str,
+        entry: Mapping[str, Any],
+        terms: list[str],
+    ) -> int:
+        description = str(entry.get("description") or "")
+        haystack = " ".join(
+            [
+                api_name,
+                description,
+                str(entry.get("method") or ""),
+                str(entry.get("path") or ""),
+                json.dumps(entry.get("parameters") or []),
+                json.dumps(entry.get("response_schemas") or {}),
+            ]
+        ).lower()
+        score = 1
+        for term in terms:
+            score += haystack.count(term)
+
+        if api_name == "login":
+            score += 8
+        if api_name.startswith("show_"):
+            score += 5
+        if api_name.startswith("search_"):
+            score += 1
+        if api_name.startswith(("update_", "delete_", "add_", "remove_", "review_", "verify_")):
+            score -= 4
+        if api_name.startswith(("like_", "unlike_")):
+            score -= 2
+
+        parameter_names = {
+            str(item.get("name"))
+            for item in entry.get("parameters") or []
+            if isinstance(item, Mapping) and item.get("name")
+        }
+        if "access_token" in parameter_names:
+            score += 4
+            if any(term in terms for term in ("playlist", "playlists", "liked", "song", "songs")):
+                score += 2
+        if {"username", "password"}.issubset(parameter_names):
+            score += 6
+
+        public_data = self._context.public_data if self._context is not None else {}
+        library_name = str(public_data.get("library_name") or "").lower().strip()
+        metric_adjective = str(public_data.get("metric_adjective") or "").lower().strip()
+        if library_name and library_name.rstrip("s") in haystack:
+            score += 4
+        if "library" in haystack and library_name:
+            score += 4
+        if metric_adjective and metric_adjective in haystack:
+            score += 4
+        if " my " in f" {str(self._context.instruction or '').lower()} " and api_name.startswith("search_"):
+            score -= 2
+
+        if app_name == "supervisor":
+            if api_name == "show_account_passwords":
+                score += 12
+            if api_name.startswith("show_"):
+                score += 3
+
+        return score
+
+    def _build_auth_hint(self, app_name: str) -> dict[str, Any] | None:
+        reference = self._world_api_reference.get(app_name)
+        if not reference:
+            return None
+        login_entry = reference.get("login")
+        requires_access_token = any(
+            any(
+                isinstance(parameter, Mapping) and parameter.get("name") == "access_token"
+                for parameter in (entry.get("parameters") or [])
+            )
+            for entry in reference.values()
+            if isinstance(entry, Mapping)
+        )
+        if login_entry is None and not requires_access_token:
+            return None
+        hint: dict[str, Any] = {}
+        if login_entry is not None:
+            hint["login_api"] = "login"
+        if requires_access_token:
+            hint["requires_access_token"] = True
+            if "supervisor" in self._world_api_reference:
+                hint["credential_source"] = {
+                    "app_name": "supervisor",
+                    "api_name": "show_account_passwords",
+                }
+                hint["suggested_flow"] = [
+                    "describe_appworld_api(app_name='supervisor', api_name='show_account_passwords')",
+                    f"describe_appworld_api(app_name='{app_name}', api_name='login')",
+                    "execute_appworld_code to fetch credentials, login, and reuse the returned access_token",
+                ]
+        return hint or None
+
+    def _build_api_auth_hint(
+        self,
+        app_name: str,
+        entry: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        api_name = str(entry.get("api_name") or "")
+        parameter_names = {
+            str(item.get("name"))
+            for item in entry.get("parameters") or []
+            if isinstance(item, Mapping) and item.get("name")
+        }
+        if "access_token" not in parameter_names and api_name != "login":
+            return None
+        hint: dict[str, Any] = {}
+        if "access_token" in parameter_names:
+            hint["requires_access_token"] = True
+        app_hint = self._build_auth_hint(app_name)
+        if app_hint:
+            hint.update(app_hint)
+        return hint
+
+    def _build_recommended_strategy_tool(self, app_name: str | None = None) -> dict[str, Any] | None:
+        candidate = str(app_name or "").strip()
+        if candidate:
+            apps = [candidate]
+        elif self._context is not None:
+            apps = list(self._context.required_apps)
+        else:
+            apps = []
+        for app in apps:
+            if self._build_task_strategy_hint(app) is not None:
+                return {
+                    "tool_name": "execute_appworld_task_strategy",
+                    "arguments": {"app_name": app},
+                }
+        return None
+
+    def _build_task_strategy_hint(self, app_name: str) -> dict[str, Any] | None:
+        if self._context is None:
+            return None
+        reference = self._world_api_reference.get(app_name)
+        if not reference:
+            return None
+        public_data = self._context.public_data
+        library_name = str(public_data.get("library_name") or "").lower().strip()
+        metric_adjective = str(public_data.get("metric_adjective") or "").lower().strip()
+        if app_name != "spotify" or library_name != "playlists":
+            return None
+        if "show_playlist_library" not in reference or "show_song" not in reference:
+            return None
+
+        recommended_apis: list[dict[str, str]] = []
+        flow: list[str] = []
+        if "supervisor" in self._world_api_reference:
+            recommended_apis.append(
+                {
+                    "app_name": "supervisor",
+                    "api_name": "show_account_passwords",
+                    "why": "Fetch the stored password for the Spotify account.",
+                }
+            )
+            flow.append(
+                "Call supervisor.show_account_passwords and read the password for the spotify account."
+            )
+        if "login" in reference:
+            recommended_apis.append(
+                {
+                    "app_name": app_name,
+                    "api_name": "login",
+                    "why": "Obtain the access_token required by Spotify library APIs.",
+                }
+            )
+            flow.append(
+                "Call spotify.login(username=<supervisor email>, password=<spotify password>) and keep the returned access_token."
+            )
+        recommended_apis.append(
+            {
+                "app_name": app_name,
+                "api_name": "show_playlist_library",
+                "why": "List the user's playlists and collect each playlist's song_ids.",
+            }
+        )
+        recommended_apis.append(
+            {
+                "app_name": app_name,
+                "api_name": "show_song",
+                "why": f"Inspect each playlist song and compare {metric_adjective or 'like'} metadata such as like_count.",
+            }
+        )
+        flow.extend(
+            [
+                "Call spotify.show_playlist_library(access_token=...) to get playlists and their song_ids.",
+                "Call spotify.show_song(song_id=...) for each unique song_id from those playlists.",
+                f"Compare the songs by {'like_count' if metric_adjective == 'liked' else metric_adjective or 'the requested metric'} and return only the song title.",
+            ]
+        )
+        metric_field = "like_count" if metric_adjective == "liked" else metric_adjective or "rating"
+        code_template = "\n".join(
+            [
+                "passwords = apis.supervisor.show_account_passwords()",
+                f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
+                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
+                f"playlists = apis.{app_name}.show_playlist_library(access_token=access_token, page_limit=20)",
+                "song_ids = sorted({song_id for playlist in playlists for song_id in playlist['song_ids']})",
+                "best = None",
+                "for song_id in song_ids:",
+                f"    song = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
+                f"    candidate = (song['{metric_field}'], song['title'])",
+                "    if best is None or candidate > best:",
+                "        best = candidate",
+                "print(best)",
+            ]
+        )
+        return {
+            "recommended_apis": recommended_apis,
+            "suggested_flow": flow,
+            "example_code": code_template,
+        }
 
     def _persist_output_artifact(self, record: dict[str, Any]) -> Path | None:
         if self._task_output_dir is None:
@@ -628,9 +1218,11 @@ def _object_to_payload(value: Any) -> dict[str, Any]:
         "metadata",
         "available_apps",
         "allowed_apps",
+        "required_apps",
         "hints",
         "docs",
         "public_data",
+        "supervisor",
     ):
         attr = getattr(value, name, None)
         if attr is not None:
@@ -677,8 +1269,10 @@ def _normalize_search_results(value: Any) -> list[dict[str, Any]]:
 def _collect_docs_corpus(
     context: AppWorldTaskContext | None,
     docs_corpus: list[dict[str, Any]],
+    world_docs_corpus: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     docs: list[dict[str, Any]] = [dict(item) for item in docs_corpus]
+    docs.extend(dict(item) for item in world_docs_corpus)
     if context is None:
         return docs
     for index, doc in enumerate(context.docs):
@@ -727,6 +1321,58 @@ def _safe_filename(value: str) -> str:
     return cleaned or "output"
 
 
+def _task_directory(appworld_root: Path | None, task_id: str) -> Path | None:
+    if appworld_root is None:
+        return None
+    task_directory = appworld_root / "data" / "tasks" / task_id
+    if not task_directory.exists():
+        return None
+    return task_directory
+
+
+def _normalize_supervisor_payload(value: Any) -> dict[str, Any]:
+    normalized = _normalize_external_payload(value)
+    if not isinstance(normalized, dict):
+        return {}
+    allowed_keys = {"first_name", "last_name", "email", "phone_number"}
+    return {
+        key: normalized[key]
+        for key in allowed_keys
+        if key in normalized and normalized[key] is not None
+    }
+
+
+def _tokenize_text(value: str) -> list[str]:
+    return [
+        term
+        for term in re.split(r"[^a-z0-9_]+", value.lower())
+        if len(term) >= 3 and term not in _APPWORLD_API_STOP_WORDS
+    ]
+
+
+def _ensure_observable_code(code: str) -> str:
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    if not tree.body:
+        return code
+    last_statement = tree.body[-1]
+    if not isinstance(last_statement, ast.Expr):
+        return code
+    call = ast.Call(
+        func=ast.Name(id="print", ctx=ast.Load()),
+        args=[last_statement.value],
+        keywords=[],
+    )
+    tree.body[-1] = ast.Expr(value=call)
+    ast.fix_missing_locations(tree)
+    try:
+        return ast.unparse(tree)
+    except Exception:
+        return code
+
+
 @contextmanager
 def _working_directory(path: Path | None):
     if path is None:
@@ -738,4 +1384,3 @@ def _working_directory(path: Path | None):
         yield
     finally:
         os.chdir(previous)
-

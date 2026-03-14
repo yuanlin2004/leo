@@ -60,9 +60,12 @@ def test_registry_attaches_and_detaches_environment_tools() -> None:
 
     assert attached["environment"] == "appworld"
     assert attached["tool_names"] == [
+        "describe_appworld_api",
         "evaluate_environment_task",
         "execute_appworld_code",
+        "execute_appworld_task_strategy",
         "get_environment_task_context",
+        "list_appworld_apis",
         "save_environment_output",
         "search_appworld_docs",
     ]
@@ -72,6 +75,9 @@ def test_registry_attaches_and_detaches_environment_tools() -> None:
         "instruction": "Prepare a customer support reply.",
         "metadata": {"difficulty": "easy"},
         "available_apps": ["gmail"],
+        "required_apps": [],
+        "public_data": {},
+        "supervisor": {},
         "hints": [],
         "docs": [],
     }
@@ -95,6 +101,9 @@ def test_appworld_adapter_filters_hidden_fields_from_context_and_tools() -> None
                 "public_data": {
                     "metadata": {"tier": "gold"},
                     "available_apps": ["calendar"],
+                    "required_apps": ["calendar"],
+                    "public_data": {"account_type": "business"},
+                    "supervisor": {"first_name": "Ava", "email": "ava@example.com"},
                     "hints": ["Use the public CRM notes only."],
                 },
                 "expected_answer": "customer-visible-answer",
@@ -119,6 +128,9 @@ def test_appworld_adapter_filters_hidden_fields_from_context_and_tools() -> None
         "instruction": "Draft the final answer.",
         "metadata": {"tier": "gold"},
         "available_apps": ["calendar"],
+        "required_apps": ["calendar"],
+        "public_data": {"account_type": "business"},
+        "supervisor": {"first_name": "Ava", "email": "ava@example.com"},
         "hints": ["Use the public CRM notes only."],
         "docs": [],
     }
@@ -207,3 +219,334 @@ def test_environment_adapter_requires_initialization() -> None:
 
     with pytest.raises(EnvironmentAdapterError, match="not initialized"):
         adapter.get_public_task_context()
+
+
+def test_appworld_docs_search_uses_docs_corpus() -> None:
+    registry = ToolsRegistry(capability_profile="benchmark-environment")
+    registry.attach_environment(
+        AppWorldEnvironmentAdapter(
+            task_payload={
+                "task_id": "aw-4",
+                "instruction": "Inspect Spotify APIs.",
+                "public_data": {
+                    "required_apps": ["spotify"],
+                    "docs": [
+                        "spotify.show_liked_songs returns the songs the user has liked.",
+                        "spotify.show_playlist returns playlist details.",
+                    ],
+                },
+            }
+        )
+    )
+
+    result = registry.execute(
+        "search_appworld_docs",
+        query="liked songs spotify",
+        max_results=2,
+    )
+
+    assert result["query"] == "liked songs spotify"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["source"] == "task-doc-1"
+    assert "show_liked_songs" in result["results"][0]["excerpt"]
+
+
+def test_execute_appworld_code_tool_description_guides_runtime_usage() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-5",
+            "instruction": "Inspect Spotify APIs.",
+        }
+    )
+    adapter.initialize()
+
+    specs = {spec.name: spec for spec in adapter.get_tool_specs()}
+    execute_spec = specs["execute_appworld_code"]
+
+    assert "`apis`" in execute_spec.description
+    assert "print(...)" in execute_spec.description
+    assert "`apis`" in execute_spec.parameters["properties"]["code"]["description"]
+    assert "print" in execute_spec.parameters["properties"]["code"]["description"]
+
+
+def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None:
+    class FakeApiDocs:
+        spotify = {
+            "verify_account": {
+                "app_name": "spotify",
+                "api_name": "verify_account",
+                "method": "POST",
+                "path": "/spotify/verify_account",
+                "description": "Verify your account using a verification code.",
+                "parameters": [
+                    {"name": "email", "required": True},
+                    {"name": "verification_code", "required": True},
+                ],
+            },
+            "login": {
+                "app_name": "spotify",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/spotify/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_playlist_library": {
+                "app_name": "spotify",
+                "api_name": "show_playlist_library",
+                "method": "GET",
+                "path": "/spotify/library/playlists",
+                "description": "Get a list of playlists in the user's playlist library.",
+                "parameters": [
+                    {"name": "access_token", "required": True},
+                    {"name": "page_index", "required": False},
+                ],
+            },
+            "show_song": {
+                "app_name": "spotify",
+                "api_name": "show_song",
+                "method": "GET",
+                "path": "/spotify/songs/{song_id}",
+                "description": "Get details of a specific song.",
+                "parameters": [
+                    {"name": "song_id", "required": True},
+                ],
+            },
+            "update_playlist": {
+                "app_name": "spotify",
+                "api_name": "update_playlist",
+                "method": "PATCH",
+                "path": "/spotify/playlists/{playlist_id}",
+                "description": "Update a playlist.",
+                "parameters": [
+                    {"name": "playlist_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        }
+        supervisor = {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        }
+
+    class FakeTask:
+        allowed_apps = ["spotify", "supervisor"]
+        api_docs = FakeApiDocs()
+
+    class FakeWorld:
+        task = FakeTask()
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-6",
+            "instruction": "What is the title of the most-liked song in my Spotify playlists.",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "library_name": "playlists",
+                    "metric_adjective": "liked",
+                    "most_least": "most",
+                },
+                "supervisor": {"email": "joyce-weav@gmail.com"},
+            },
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-6",
+            "instruction": "What is the title of the most-liked song in my Spotify playlists.",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "library_name": "playlists",
+                    "metric_adjective": "liked",
+                    "most_least": "most",
+                },
+                "supervisor": {"email": "joyce-weav@gmail.com"},
+            },
+        }
+    )
+
+    listed = adapter.list_app_apis("spotify", query="playlist", max_results=5)
+    default_listed = adapter.list_app_apis("spotify", max_results=5)
+    described = adapter.describe_app_api("spotify", "login")
+    token_described = adapter.describe_app_api("spotify", "show_playlist_library")
+
+    assert listed["app_name"] == "spotify"
+    assert listed["query"] == "playlist"
+    assert listed["results"][0] == {
+        "api_name": "show_playlist_library",
+        "description": "Get a list of playlists in the user's playlist library.",
+        "method": "GET",
+        "path": "/spotify/library/playlists",
+        "required_parameters": ["access_token"],
+    }
+    assert listed["auth_hint"] == {
+        "login_api": "login",
+        "requires_access_token": True,
+        "credential_source": {
+            "app_name": "supervisor",
+            "api_name": "show_account_passwords",
+        },
+        "suggested_flow": [
+            "describe_appworld_api(app_name='supervisor', api_name='show_account_passwords')",
+            "describe_appworld_api(app_name='spotify', api_name='login')",
+            "execute_appworld_code to fetch credentials, login, and reuse the returned access_token",
+        ],
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the Spotify account.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "login",
+                "why": "Obtain the access_token required by Spotify library APIs.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_playlist_library",
+                "why": "List the user's playlists and collect each playlist's song_ids.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_song",
+                "why": "Inspect each playlist song and compare liked metadata such as like_count.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the spotify account.",
+            "Call spotify.login(username=<supervisor email>, password=<spotify password>) and keep the returned access_token.",
+            "Call spotify.show_playlist_library(access_token=...) to get playlists and their song_ids.",
+            "Call spotify.show_song(song_id=...) for each unique song_id from those playlists.",
+            "Compare the songs by like_count and return only the song title.",
+        ],
+        "example_code": "\n".join(
+            [
+                "passwords = apis.supervisor.show_account_passwords()",
+                "spotify_password = next(item['password'] for item in passwords if item['account_name'] == 'spotify')",
+                "access_token = apis.spotify.login(username='joyce-weav@gmail.com', password=spotify_password)['access_token']",
+                "playlists = apis.spotify.show_playlist_library(access_token=access_token, page_limit=20)",
+                "song_ids = sorted({song_id for playlist in playlists for song_id in playlist['song_ids']})",
+                "best = None",
+                "for song_id in song_ids:",
+                "    song = apis.spotify.show_song(song_id=song_id, access_token=access_token)",
+                "    candidate = (song['like_count'], song['title'])",
+                "    if best is None or candidate > best:",
+                "        best = candidate",
+                "print(best)",
+            ]
+        ),
+    }
+    assert [item["api_name"] for item in default_listed["results"][:3]] == [
+        "show_playlist_library",
+        "login",
+        "show_song",
+    ]
+    assert "task_strategy_hint" in default_listed
+    assert described == {
+        "app_name": "spotify",
+        "api_name": "login",
+        "reference": {
+            "app_name": "spotify",
+            "api_name": "login",
+            "method": "POST",
+            "path": "/spotify/auth/token",
+            "description": "Login to your account.",
+            "parameters": [
+                {"name": "username", "required": True},
+                {"name": "password", "required": True},
+            ],
+        },
+        "auth_hint": {
+            "login_api": "login",
+            "requires_access_token": True,
+            "credential_source": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+            },
+            "suggested_flow": [
+                "describe_appworld_api(app_name='supervisor', api_name='show_account_passwords')",
+                "describe_appworld_api(app_name='spotify', api_name='login')",
+                "execute_appworld_code to fetch credentials, login, and reuse the returned access_token",
+            ],
+        },
+        "recommended_next_tool": {
+            "tool_name": "execute_appworld_task_strategy",
+            "arguments": {"app_name": "spotify"},
+        },
+    }
+    assert token_described == {
+        "app_name": "spotify",
+        "api_name": "show_playlist_library",
+        "reference": {
+            "app_name": "spotify",
+            "api_name": "show_playlist_library",
+            "method": "GET",
+            "path": "/spotify/library/playlists",
+            "description": "Get a list of playlists in the user's playlist library.",
+            "parameters": [
+                {"name": "access_token", "required": True},
+                {"name": "page_index", "required": False},
+            ],
+        },
+        "auth_hint": {
+            "requires_access_token": True,
+            "login_api": "login",
+            "credential_source": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+            },
+            "suggested_flow": [
+                "describe_appworld_api(app_name='supervisor', api_name='show_account_passwords')",
+                "describe_appworld_api(app_name='spotify', api_name='login')",
+                "execute_appworld_code to fetch credentials, login, and reuse the returned access_token",
+            ],
+        },
+        "recommended_next_tool": {
+            "tool_name": "execute_appworld_task_strategy",
+            "arguments": {"app_name": "spotify"},
+        },
+    }
+
+
+def test_execute_appworld_code_auto_prints_final_expression() -> None:
+    class FakeWorld:
+        def __init__(self) -> None:
+            self.received: list[str] = []
+
+        def execute(self, code: str) -> dict[str, object]:
+            self.received.append(code)
+            return {"executed_code": code}
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-7",
+            "instruction": "Inspect an AppWorld expression.",
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._initialize_from_payload({"task_id": "aw-7", "instruction": "Inspect an AppWorld expression."})
+
+    result = adapter.execute_task_code("apis.supervisor.show_account_passwords()")
+
+    assert result == {
+        "task_id": "aw-7",
+        "code": "apis.supervisor.show_account_passwords()",
+        "result": {
+            "executed_code": "print(apis.supervisor.show_account_passwords())",
+        },
+    }
