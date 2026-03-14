@@ -9,6 +9,7 @@ from leo.skills import (
     SkillsCatalog,
     SkillsCatalogError,
 )
+from leo.tools.core import CoreToolRuntime, build_core_tool_specs
 
 
 class ToolsRegistryError(Exception):
@@ -36,13 +37,28 @@ class ToolsRegistry:
         skills_root: str | Path | None = None,
         *,
         user_skills_root: str | Path | None = None,
+        workspace_root: str | Path | None = None,
     ) -> None:
         self._tools: dict[str, RegisteredTool] = {}
+        self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
         self._catalog = SkillsCatalog(
             project_root=skills_root,
             user_root=user_skills_root,
         )
+        self._register_core_tools()
         self._register_meta_tools()
+
+    def _register_core_tools(self) -> None:
+        for name, description, parameters, handler in build_core_tool_specs(
+            self._core_runtime
+        ):
+            self.register_tool(
+                name=name,
+                description=description,
+                parameters=parameters,
+                handler=handler,
+                provenance="runtime:core",
+            )
 
     def _register_meta_tools(self) -> None:
         self.register_tool(
@@ -293,6 +309,7 @@ class ToolsRegistry:
         return result.to_dict()
 
     def reset_session_state(self) -> None:
+        self._core_runtime.reset_state()
         self._remove_skill_tools()
         self._catalog.reset_session_state()
 
