@@ -1278,6 +1278,272 @@ def test_appworld_mutation_strategy_requests_immediate_final_answer() -> None:
     assert "Do not run more AppWorld code" in result["strategy_guidance"]
 
 
+def test_appworld_file_system_strategy_hint() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-14",
+            "instruction": "In my file system, add the prefix \"YYYY-MM-DD_\" to all file names in the ~/downloads/ directory, based on their creation dates, and then move all files not from this year to ~/trash/.",
+            "public_data": {
+                "required_apps": ["file_system"],
+                "public_data": {
+                    "prefix_format": "YYYY-MM-DD_",
+                    "downloads_directory": "~/downloads/",
+                    "trash_directory": "~/trash/",
+                },
+                "supervisor": {"email": "nan_ritt@gmail.com"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-14",
+            "instruction": "In my file system, add the prefix \"YYYY-MM-DD_\" to all file names in the ~/downloads/ directory, based on their creation dates, and then move all files not from this year to ~/trash/.",
+            "public_data": {
+                "required_apps": ["file_system"],
+                "public_data": {
+                    "prefix_format": "YYYY-MM-DD_",
+                    "downloads_directory": "~/downloads/",
+                    "trash_directory": "~/trash/",
+                },
+                "supervisor": {"email": "nan_ritt@gmail.com"},
+            },
+        }
+    )
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "file_system": {
+            "login": {
+                "app_name": "file_system",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/file_system/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_directory": {
+                "app_name": "file_system",
+                "api_name": "show_directory",
+                "method": "GET",
+                "path": "/file_system/directory",
+                "description": "Show a list of files and/or sub-directories, optionally recursively, in a directory.",
+                "parameters": [
+                    {"name": "directory_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+            "show_file": {
+                "app_name": "file_system",
+                "api_name": "show_file",
+                "method": "GET",
+                "path": "/file_system/file",
+                "description": "Show a file's content and other details, if it exists.",
+                "parameters": [
+                    {"name": "file_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+            "move_file": {
+                "app_name": "file_system",
+                "api_name": "move_file",
+                "method": "POST",
+                "path": "/file_system/file/move",
+                "description": "Move a file to another location.",
+                "parameters": [
+                    {"name": "source_file_path", "required": True},
+                    {"name": "destination_file_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    listed = adapter.list_app_apis("file_system", max_results=5)
+
+    assert {item["api_name"] for item in listed["results"][:4]} == {
+        "show_directory",
+        "show_file",
+        "move_file",
+        "login",
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the file_system account.",
+            },
+            {
+                "app_name": "file_system",
+                "api_name": "login",
+                "why": "Obtain the access_token required by file_system APIs.",
+            },
+            {
+                "app_name": "file_system",
+                "api_name": "show_directory",
+                "why": "List every file path in the downloads directory before renaming or moving anything.",
+            },
+            {
+                "app_name": "file_system",
+                "api_name": "show_file",
+                "why": "Read each file's created_at timestamp to decide the prefix and whether it stays in downloads or moves to trash.",
+            },
+            {
+                "app_name": "file_system",
+                "api_name": "move_file",
+                "why": "Rename each file with the date prefix and move pre-this-year files into trash.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the file_system account.",
+            "Call file_system.login(username=<supervisor email>, password=<file_system password>) and keep the returned access_token.",
+            "Call file_system.show_directory(directory_path='~/downloads/', access_token=...) to list all download files.",
+            "For each file path, call file_system.show_file(...) and parse created_at.",
+            "Prefix every filename with its created_at formatted as 'YYYY-MM-DD_'.",
+            "Keep files from the current year in '~/downloads/'; move older files into '~/trash/'.",
+            "Return null because this task is satisfied by the file-system mutations.",
+        ],
+        "example_code": "\n".join(
+            [
+                "from appworld.common.datetime import DateTime",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "file_system_password = next(item['password'] for item in passwords if item['account_name'] == 'file_system')",
+                "access_token = apis.file_system.login(username='nan_ritt@gmail.com', password=file_system_password)['access_token']",
+                "file_paths = apis.file_system.show_directory(directory_path='~/downloads/', access_token=access_token)",
+                "current_year = DateTime.now().year",
+                "for file_path in file_paths:",
+                "    file_record = apis.file_system.show_file(file_path=file_path, access_token=access_token)",
+                "    created_at = DateTime.from_datetime_string(file_record['created_at'])",
+                "    prefix = created_at.format('YYYY-MM-DD_')",
+                "    file_name = file_record['path'].split('/')[-1]",
+                "    destination_directory = '~/downloads/' if created_at.year == current_year else '~/trash/'",
+                "    destination_file_path = destination_directory + prefix + file_name",
+                "    apis.file_system.move_file(source_file_path=file_path, destination_file_path=destination_file_path, access_token=access_token)",
+                "print(None)",
+            ]
+        ),
+        "final_answer_after_strategy": None,
+    }
+    assert listed["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "file_system"},
+    }
+
+
+def test_appworld_failed_mutation_strategy_does_not_auto_finalize() -> None:
+    class FakeWorld:
+        def execute(self, code: str) -> str:
+            return "Execution failed. Traceback:\nboom"
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-15",
+            "instruction": "In my file system, add the prefix.",
+            "public_data": {
+                "required_apps": ["file_system"],
+                "public_data": {
+                    "prefix_format": "YYYY-MM-DD_",
+                    "downloads_directory": "~/downloads/",
+                    "trash_directory": "~/trash/",
+                },
+                "supervisor": {"email": "nan_ritt@gmail.com"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-15",
+            "instruction": "In my file system, add the prefix.",
+            "public_data": {
+                "required_apps": ["file_system"],
+                "public_data": {
+                    "prefix_format": "YYYY-MM-DD_",
+                    "downloads_directory": "~/downloads/",
+                    "trash_directory": "~/trash/",
+                },
+                "supervisor": {"email": "nan_ritt@gmail.com"},
+            },
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "file_system": {
+            "login": {
+                "app_name": "file_system",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/file_system/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_directory": {
+                "app_name": "file_system",
+                "api_name": "show_directory",
+                "method": "GET",
+                "path": "/file_system/directory",
+                "description": "Show directory contents.",
+                "parameters": [
+                    {"name": "directory_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+            "show_file": {
+                "app_name": "file_system",
+                "api_name": "show_file",
+                "method": "GET",
+                "path": "/file_system/file",
+                "description": "Show a file.",
+                "parameters": [
+                    {"name": "file_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+            "move_file": {
+                "app_name": "file_system",
+                "api_name": "move_file",
+                "method": "POST",
+                "path": "/file_system/file/move",
+                "description": "Move a file.",
+                "parameters": [
+                    {"name": "source_file_path", "required": True},
+                    {"name": "destination_file_path", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    result = adapter.execute_task_strategy(app_name="file_system")
+
+    assert result["result"].startswith("Execution failed.")
+    assert "_auto_final_answer" not in result
+    assert "task_completed" not in result
+
+
 def test_execute_appworld_code_auto_prints_final_expression() -> None:
     class FakeWorld:
         def __init__(self) -> None:

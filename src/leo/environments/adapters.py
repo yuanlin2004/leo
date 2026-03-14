@@ -572,7 +572,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         result = self.execute_task_code(code)
         result["strategy_app_name"] = name
         result["strategy_code"] = code
-        if "final_answer_after_strategy" in strategy:
+        if "final_answer_after_strategy" in strategy and not _appworld_execution_failed(result):
             auto_final_answer = strategy["final_answer_after_strategy"]
             result["_auto_final_answer"] = auto_final_answer
             result["task_completed"] = True
@@ -1413,6 +1413,70 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 "final_answer_after_strategy": None,
             }
 
+        if (
+            app_name == "file_system"
+            and "downloads_directory" in public_data
+            and "trash_directory" in public_data
+            and "prefix_format" in public_data
+            and {"login", "show_directory", "show_file", "move_file"}.issubset(reference)
+        ):
+            downloads_directory = str(public_data.get("downloads_directory") or "").strip()
+            trash_directory = str(public_data.get("trash_directory") or "").strip()
+            prefix_format = str(public_data.get("prefix_format") or "").strip()
+            if not downloads_directory or not trash_directory or not prefix_format:
+                return None
+            recommended_apis.extend(
+                [
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_directory",
+                        "why": "List every file path in the downloads directory before renaming or moving anything.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_file",
+                        "why": "Read each file's created_at timestamp to decide the prefix and whether it stays in downloads or moves to trash.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "move_file",
+                        "why": "Rename each file with the date prefix and move pre-this-year files into trash.",
+                    },
+                ]
+            )
+            flow.extend(
+                [
+                    f"Call file_system.show_directory(directory_path={downloads_directory!r}, access_token=...) to list all download files.",
+                    "For each file path, call file_system.show_file(...) and parse created_at.",
+                    f"Prefix every filename with its created_at formatted as {prefix_format!r}.",
+                    f"Keep files from the current year in {downloads_directory!r}; move older files into {trash_directory!r}.",
+                    "Return null because this task is satisfied by the file-system mutations.",
+                ]
+            )
+            code_lines = [
+                "from appworld.common.datetime import DateTime",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "file_system_password = next(item['password'] for item in passwords if item['account_name'] == 'file_system')",
+                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password=file_system_password)['access_token']",
+                f"file_paths = apis.{app_name}.show_directory(directory_path={downloads_directory!r}, access_token=access_token)",
+                "current_year = DateTime.now().year",
+                "for file_path in file_paths:",
+                f"    file_record = apis.{app_name}.show_file(file_path=file_path, access_token=access_token)",
+                "    created_at = DateTime.from_datetime_string(file_record['created_at'])",
+                f"    prefix = created_at.format({prefix_format!r})",
+                "    file_name = file_record['path'].split('/')[-1]",
+                f"    destination_directory = {downloads_directory!r} if created_at.year == current_year else {trash_directory!r}",
+                "    destination_file_path = destination_directory + prefix + file_name",
+                f"    apis.{app_name}.move_file(source_file_path=file_path, destination_file_path=destination_file_path, access_token=access_token)",
+                "print(None)",
+            ]
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": "\n".join(code_lines),
+                "final_answer_after_strategy": None,
+            }
+
         return None
 
     def _persist_output_artifact(self, record: dict[str, Any]) -> Path | None:
@@ -1613,6 +1677,15 @@ def _search_docs_corpus(
         )
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [item for _score, item in ranked[:max_results]]
+
+
+def _appworld_execution_failed(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    payload = result.get("result")
+    if isinstance(payload, str):
+        return payload.lstrip().startswith("Execution failed.")
+    return False
 
 
 def _safe_filename(value: str) -> str:
