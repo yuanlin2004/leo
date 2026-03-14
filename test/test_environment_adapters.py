@@ -409,12 +409,12 @@ def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None
             {
                 "app_name": "supervisor",
                 "api_name": "show_account_passwords",
-                "why": "Fetch the stored password for the Spotify account.",
+                "why": "Fetch the stored password for the spotify account.",
             },
             {
                 "app_name": "spotify",
                 "api_name": "login",
-                "why": "Obtain the access_token required by Spotify library APIs.",
+                "why": "Obtain the access_token required by spotify APIs.",
             },
             {
                 "app_name": "spotify",
@@ -594,12 +594,12 @@ def test_appworld_spotify_library_release_strategy_hint() -> None:
             {
                 "app_name": "supervisor",
                 "api_name": "show_account_passwords",
-                "why": "Fetch the stored password for the Spotify account.",
+                "why": "Fetch the stored password for the spotify account.",
             },
             {
                 "app_name": "spotify",
                 "api_name": "login",
-                "why": "Obtain the access_token required by Spotify library APIs.",
+                "why": "Obtain the access_token required by spotify APIs.",
             },
             {
                 "app_name": "spotify",
@@ -764,6 +764,131 @@ def test_execute_appworld_code_includes_strategy_guidance_when_available() -> No
     }
     assert "execute_appworld_task_strategy next" in result["strategy_guidance"]
     assert "access tokens" in result["strategy_guidance"]
+
+
+def test_appworld_venmo_likes_strategy_hint() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-10",
+            "instruction": "How many likes did all Venmo transactions, I sent this month, have in total?",
+            "public_data": {
+                "required_apps": ["venmo"],
+                "public_data": {
+                    "sent_received": "sent",
+                    "threshold_duration": "month",
+                },
+                "supervisor": {"email": "joseharr@gmail.com"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-10",
+            "instruction": "How many likes did all Venmo transactions, I sent this month, have in total?",
+            "public_data": {
+                "required_apps": ["venmo"],
+                "public_data": {
+                    "sent_received": "sent",
+                    "threshold_duration": "month",
+                },
+                "supervisor": {"email": "joseharr@gmail.com"},
+            },
+        }
+    )
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "venmo": {
+            "login": {
+                "app_name": "venmo",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/venmo/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_transactions": {
+                "app_name": "venmo",
+                "api_name": "show_transactions",
+                "method": "GET",
+                "path": "/venmo/transactions",
+                "description": "Get a list of your transactions.",
+                "parameters": [
+                    {"name": "direction", "required": False},
+                    {"name": "min_like_count", "required": False},
+                    {"name": "min_created_at", "required": False},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    listed = adapter.list_app_apis("venmo", max_results=5)
+
+    assert {item["api_name"] for item in listed["results"][:2]} == {
+        "show_transactions",
+        "login",
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the venmo account.",
+            },
+            {
+                "app_name": "venmo",
+                "api_name": "login",
+                "why": "Obtain the access_token required by venmo APIs.",
+            },
+            {
+                "app_name": "venmo",
+                "api_name": "show_transactions",
+                "why": "List Venmo transactions filtered by direction, creation time, and minimum likes.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the venmo account.",
+            "Call venmo.login(username=<supervisor email>, password=<venmo password>) and keep the returned access_token.",
+            "Compute the start of this month and use it as min_created_at.",
+            "Call venmo.show_transactions with min_like_count=1 and direction='sent' when applicable.",
+            "Sum like_count across all returned transactions and return only that number.",
+        ],
+        "example_code": "\n".join(
+            [
+                "from appworld.common.datetime import DateTime",
+                "from appworld.common.utils import find_all_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "venmo_password = next(item['password'] for item in passwords if item['account_name'] == 'venmo')",
+                "access_token = apis.venmo.login(username='joseharr@gmail.com', password=venmo_password)['access_token']",
+                "threshold_datetime = DateTime.today().start_of('month').to_date_string()",
+                "query_kwargs = {",
+                "    'min_like_count': 1,",
+                "    'min_created_at': threshold_datetime,",
+                "    'access_token': access_token,",
+                "}",
+                "query_kwargs['direction'] = 'sent'",
+                "transactions = find_all_from_pages(apis.venmo.show_transactions, **query_kwargs)",
+                "total_likes = sum(item.get('like_count', 0) for item in transactions)",
+                "print(total_likes)",
+            ]
+        ),
+    }
+    assert listed["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "venmo"},
+    }
 
 
 def test_execute_appworld_code_auto_prints_final_expression() -> None:

@@ -1064,8 +1064,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         library_name = str(public_data.get("library_name") or "").lower().strip()
         metric_adjective = str(public_data.get("metric_adjective") or "").lower().strip()
         instruction = str(self._context.instruction or "").lower()
-        if app_name != "spotify":
-            return None
         recommended_apis: list[dict[str, str]] = []
         flow: list[str] = []
         if "supervisor" in self._world_api_reference:
@@ -1073,25 +1071,25 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 {
                     "app_name": "supervisor",
                     "api_name": "show_account_passwords",
-                    "why": "Fetch the stored password for the Spotify account.",
+                    "why": f"Fetch the stored password for the {app_name} account.",
                 }
             )
             flow.append(
-                "Call supervisor.show_account_passwords and read the password for the spotify account."
+                f"Call supervisor.show_account_passwords and read the password for the {app_name} account."
             )
         if "login" in reference:
             recommended_apis.append(
                 {
                     "app_name": app_name,
                     "api_name": "login",
-                    "why": "Obtain the access_token required by Spotify library APIs.",
+                    "why": f"Obtain the access_token required by {app_name} APIs.",
                 }
             )
             flow.append(
-                "Call spotify.login(username=<supervisor email>, password=<spotify password>) and keep the returned access_token."
+                f"Call {app_name}.login(username=<supervisor email>, password=<{app_name} password>) and keep the returned access_token."
             )
 
-        if library_name == "playlists":
+        if app_name == "spotify" and library_name == "playlists":
             if "show_playlist_library" not in reference or "show_song" not in reference:
                 return None
             recommended_apis.append(
@@ -1139,6 +1137,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             }
 
         if (
+            app_name == "spotify"
+            and
             public_data.get("oldest_or_newest") in {"oldest", "newest"}
             and any(term in instruction for term in ("library", "libraries"))
             and "song" in instruction
@@ -1210,6 +1210,66 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 "recommended_apis": recommended_apis,
                 "suggested_flow": flow,
                 "example_code": code_template,
+            }
+
+        if (
+            app_name == "venmo"
+            and "transaction" in instruction
+            and "like" in instruction
+            and "total" in instruction
+            and "show_transactions" in reference
+        ):
+            sent_received = str(public_data.get("sent_received") or "").strip().lower()
+            threshold_duration = str(public_data.get("threshold_duration") or "").strip().lower()
+            if sent_received not in {"sent", "received", "sent or received"}:
+                sent_received = "sent or received"
+            if not threshold_duration:
+                threshold_duration = "month"
+            recommended_apis.extend(
+                [
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_transactions",
+                        "why": "List Venmo transactions filtered by direction, creation time, and minimum likes.",
+                    },
+                ]
+            )
+            flow.extend(
+                [
+                    f"Compute the start of this {threshold_duration} and use it as min_created_at.",
+                    f"Call venmo.show_transactions with min_like_count=1 and direction={sent_received!r} when applicable.",
+                    "Sum like_count across all returned transactions and return only that number.",
+                ]
+            )
+            direction_line = ""
+            if sent_received in {"sent", "received"}:
+                direction_line = f"query_kwargs['direction'] = '{sent_received}'"
+            code_lines = [
+                "from appworld.common.datetime import DateTime",
+                "from appworld.common.utils import find_all_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
+                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
+                f"threshold_datetime = DateTime.today().start_of('{threshold_duration}').to_date_string()",
+                "query_kwargs = {",
+                "    'min_like_count': 1,",
+                "    'min_created_at': threshold_datetime,",
+                "    'access_token': access_token,",
+                "}",
+            ]
+            if direction_line:
+                code_lines.append(direction_line)
+            code_lines.extend(
+                [
+                    f"transactions = find_all_from_pages(apis.{app_name}.show_transactions, **query_kwargs)",
+                    "total_likes = sum(item.get('like_count', 0) for item in transactions)",
+                    "print(total_likes)",
+                ]
+            )
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": "\n".join(code_lines),
             }
 
         return None
