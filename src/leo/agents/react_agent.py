@@ -177,6 +177,20 @@ class ReActAgent(Agent):
             return "-"
         return ", ".join(names)
 
+    @staticmethod
+    def _extract_auto_final_answer(result: Any) -> tuple[bool, str | None]:
+        if not isinstance(result, dict):
+            return False, None
+        if "_auto_final_answer" not in result:
+            return False, None
+        answer = result.get("_auto_final_answer")
+        if answer is None:
+            return True, None
+        if not isinstance(answer, str):
+            raise ValueError("_auto_final_answer must be a string or null.")
+        text = answer.strip()
+        return True, (text or None)
+
     def _build_model_messages(
         self,
         conversation: list[dict[str, Any]],
@@ -441,6 +455,17 @@ class ReActAgent(Agent):
                     tool_name,
                     formatted_result,
                 )
+
+                auto_finalized, auto_final_answer = self._extract_auto_final_answer(result)
+                if auto_finalized:
+                    LOGGER.info(
+                        "Turn %d: tool=%s requested automatic final answer preview=%s",
+                        turn_number,
+                        tool_name,
+                        self._preview_text("" if auto_final_answer is None else auto_final_answer),
+                    )
+                    LOGGER.info("Returning automatic final answer after %d turns.", turn_number)
+                    return auto_final_answer
 
                 conversation.append(
                     {

@@ -91,6 +91,38 @@ def test_react_agent_returns_structured_final_answer_tool_payload() -> None:
     )
 
 
+def test_react_agent_accepts_tool_requested_auto_final_answer() -> None:
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="complete_task",
+        description="Complete the task immediately.",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        handler=lambda: {
+            "task_completed": True,
+            "_auto_final_answer": None,
+            "recommended_next_tool": {
+                "tool_name": "final_answer",
+                "arguments": {"answer": None},
+            },
+        },
+    )
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall("call-complete", "complete_task", "{}"),
+                ],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("finish the mutation task", max_iterations=2)
+
+    assert result is None
+
+
 def test_react_agent_session_persists_structured_final_answer_for_follow_ups() -> None:
     class RecordingLLM(FakeLLM):
         def __init__(self, responses: list[dict[str, object]]):

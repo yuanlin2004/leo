@@ -572,6 +572,18 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         result = self.execute_task_code(code)
         result["strategy_app_name"] = name
         result["strategy_code"] = code
+        if "final_answer_after_strategy" in strategy:
+            auto_final_answer = strategy["final_answer_after_strategy"]
+            result["_auto_final_answer"] = auto_final_answer
+            result["task_completed"] = True
+            result["recommended_next_tool"] = {
+                "tool_name": "final_answer",
+                "arguments": {"answer": auto_final_answer},
+            }
+            result["strategy_guidance"] = (
+                "The task-specific AppWorld strategy already completed the required state change. "
+                "Do not run more AppWorld code. Call final_answer immediately."
+            )
         return result
 
     def list_app_apis(
@@ -1080,6 +1092,9 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 f"Call supervisor.show_account_passwords and read the password for the {app_name} account."
             )
         if "login" in reference:
+            login_username_placeholder = "<supervisor email>"
+            if app_name == "phone":
+                login_username_placeholder = "<supervisor phone number>"
             recommended_apis.append(
                 {
                     "app_name": app_name,
@@ -1088,7 +1103,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 }
             )
             flow.append(
-                f"Call {app_name}.login(username=<supervisor email>, password=<{app_name} password>) and keep the returned access_token."
+                f"Call {app_name}.login(username={login_username_placeholder}, password=<{app_name} password>) and keep the returned access_token."
             )
 
         if app_name == "spotify" and library_name == "playlists":
@@ -1330,6 +1345,72 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 "recommended_apis": recommended_apis,
                 "suggested_flow": flow,
                 "example_code": "\n".join(code_lines),
+                "final_answer_after_strategy": None,
+            }
+
+        if (
+            app_name == "phone"
+            and public_data.get("alarm_type") in {"go-to-sleep", "wake-up"}
+            and public_data.get("later_earlier") in {"later", "earlier"}
+            and public_data.get("metric_name") in {"hours", "minutes"}
+            and {"login", "show_alarms", "update_alarm"}.issubset(reference)
+        ):
+            alarm_type = str(public_data.get("alarm_type") or "")
+            direction = str(public_data.get("later_earlier") or "")
+            metric_name = str(public_data.get("metric_name") or "")
+            metric_value = public_data.get("metric_value")
+            if not isinstance(metric_value, (int, float)):
+                return None
+            label_substring = "Go to sleep" if alarm_type == "go-to-sleep" else "Wake Up"
+            username = str(
+                self._context.supervisor.get("phone_number") or "<supervisor phone number>"
+            )
+            time_operation = "add" if direction == "later" else "subtract"
+            minute_delta = int(metric_value * 60) if metric_name == "hours" else int(metric_value)
+            recommended_apis.extend(
+                [
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_alarms",
+                        "why": "Load alarms, find the target alarm by label, and inspect the other alarms to disable.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "update_alarm",
+                        "why": "Move the target alarm and disable the remaining enabled alarms.",
+                    },
+                ]
+            )
+            flow.extend(
+                [
+                    f"Call phone.show_alarms(access_token=...) and find the alarm whose label contains {label_substring!r}.",
+                    f"Move that alarm {metric_value:g} {metric_name} {direction}.",
+                    "Disable every other enabled alarm.",
+                    "Return null because this task is satisfied by the alarm updates.",
+                ]
+            )
+            code_lines = [
+                "from appworld.common.datetime import Time",
+                "from appworld.common.utils import find_all_from_pages, find_one_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "phone_password = next(item['password'] for item in passwords if item['account_name'] == 'phone')",
+                f"access_token = apis.{app_name}.login(username='{username}', password=phone_password)['access_token']",
+                f"target_alarm = find_one_from_pages(apis.{app_name}.show_alarms, access_token=access_token, find_by={{'label__has_substring': '{label_substring}'}})",
+                "target_alarm_id = target_alarm['alarm_id']",
+                "target_alarm_time = Time.from_string(target_alarm['time'])",
+                f"new_target_alarm_time = target_alarm_time.{time_operation}(minutes={minute_delta})",
+                f"apis.{app_name}.update_alarm(alarm_id=target_alarm_id, time=new_target_alarm_time.to_string(), access_token=access_token)",
+                f"alarms = find_all_from_pages(apis.{app_name}.show_alarms, access_token=access_token)",
+                "for alarm in alarms:",
+                "    if alarm['alarm_id'] != target_alarm_id and alarm['enabled']:",
+                f"        apis.{app_name}.update_alarm(alarm_id=alarm['alarm_id'], enabled=False, access_token=access_token)",
+                "print(None)",
+            ]
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": "\n".join(code_lines),
+                "final_answer_after_strategy": None,
             }
 
         return None

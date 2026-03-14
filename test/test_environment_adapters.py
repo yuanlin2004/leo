@@ -1033,11 +1033,249 @@ def test_appworld_simple_note_bucket_list_strategy_hint() -> None:
                 "print(None)",
             ]
         ),
+        "final_answer_after_strategy": None,
     }
     assert listed["recommended_next_tool"] == {
         "tool_name": "execute_appworld_task_strategy",
         "arguments": {"app_name": "simple_note"},
     }
+
+
+def test_appworld_phone_alarm_strategy_hint() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-12",
+            "instruction": "I am going on a vacation. Move my go-to-sleep phone alarm to 1 hour later and disable the rest.",
+            "public_data": {
+                "required_apps": ["phone"],
+                "public_data": {
+                    "alarm_type": "go-to-sleep",
+                    "metric_name": "hours",
+                    "metric_value": 1,
+                    "later_earlier": "later",
+                },
+                "supervisor": {"phone_number": "4436271690"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-12",
+            "instruction": "I am going on a vacation. Move my go-to-sleep phone alarm to 1 hour later and disable the rest.",
+            "public_data": {
+                "required_apps": ["phone"],
+                "public_data": {
+                    "alarm_type": "go-to-sleep",
+                    "metric_name": "hours",
+                    "metric_value": 1,
+                    "later_earlier": "later",
+                },
+                "supervisor": {"phone_number": "4436271690"},
+            },
+        }
+    )
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "phone": {
+            "login": {
+                "app_name": "phone",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/phone/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_alarms": {
+                "app_name": "phone",
+                "api_name": "show_alarms",
+                "method": "GET",
+                "path": "/phone/alarms",
+                "description": "Get a list of alarms.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "update_alarm": {
+                "app_name": "phone",
+                "api_name": "update_alarm",
+                "method": "PATCH",
+                "path": "/phone/alarms/{alarm_id}",
+                "description": "Update an alarm's settings.",
+                "parameters": [
+                    {"name": "alarm_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    listed = adapter.list_app_apis("phone", max_results=5)
+
+    assert {item["api_name"] for item in listed["results"][:3]} == {
+        "show_alarms",
+        "update_alarm",
+        "login",
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the phone account.",
+            },
+            {
+                "app_name": "phone",
+                "api_name": "login",
+                "why": "Obtain the access_token required by phone APIs.",
+            },
+            {
+                "app_name": "phone",
+                "api_name": "show_alarms",
+                "why": "Load alarms, find the target alarm by label, and inspect the other alarms to disable.",
+            },
+            {
+                "app_name": "phone",
+                "api_name": "update_alarm",
+                "why": "Move the target alarm and disable the remaining enabled alarms.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the phone account.",
+            "Call phone.login(username=<supervisor phone number>, password=<phone password>) and keep the returned access_token.",
+            "Call phone.show_alarms(access_token=...) and find the alarm whose label contains 'Go to sleep'.",
+            "Move that alarm 1 hours later.",
+            "Disable every other enabled alarm.",
+            "Return null because this task is satisfied by the alarm updates.",
+        ],
+        "example_code": "\n".join(
+            [
+                "from appworld.common.datetime import Time",
+                "from appworld.common.utils import find_all_from_pages, find_one_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "phone_password = next(item['password'] for item in passwords if item['account_name'] == 'phone')",
+                "access_token = apis.phone.login(username='4436271690', password=phone_password)['access_token']",
+                "target_alarm = find_one_from_pages(apis.phone.show_alarms, access_token=access_token, find_by={'label__has_substring': 'Go to sleep'})",
+                "target_alarm_id = target_alarm['alarm_id']",
+                "target_alarm_time = Time.from_string(target_alarm['time'])",
+                "new_target_alarm_time = target_alarm_time.add(minutes=60)",
+                "apis.phone.update_alarm(alarm_id=target_alarm_id, time=new_target_alarm_time.to_string(), access_token=access_token)",
+                "alarms = find_all_from_pages(apis.phone.show_alarms, access_token=access_token)",
+                "for alarm in alarms:",
+                "    if alarm['alarm_id'] != target_alarm_id and alarm['enabled']:",
+                "        apis.phone.update_alarm(alarm_id=alarm['alarm_id'], enabled=False, access_token=access_token)",
+                "print(None)",
+            ]
+        ),
+        "final_answer_after_strategy": None,
+    }
+    assert listed["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "phone"},
+    }
+
+
+def test_appworld_mutation_strategy_requests_immediate_final_answer() -> None:
+    class FakeWorld:
+        def execute(self, code: str) -> dict[str, object]:
+            return {"executed_code": code}
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-13",
+            "instruction": "I am going on a vacation. Move my go-to-sleep phone alarm to 1 hour later and disable the rest.",
+            "public_data": {
+                "required_apps": ["phone"],
+                "public_data": {
+                    "alarm_type": "go-to-sleep",
+                    "metric_name": "hours",
+                    "metric_value": 1,
+                    "later_earlier": "later",
+                },
+                "supervisor": {"phone_number": "4436271690"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-13",
+            "instruction": "I am going on a vacation. Move my go-to-sleep phone alarm to 1 hour later and disable the rest.",
+            "public_data": {
+                "required_apps": ["phone"],
+                "public_data": {
+                    "alarm_type": "go-to-sleep",
+                    "metric_name": "hours",
+                    "metric_value": 1,
+                    "later_earlier": "later",
+                },
+                "supervisor": {"phone_number": "4436271690"},
+            },
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "phone": {
+            "login": {
+                "app_name": "phone",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/phone/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_alarms": {
+                "app_name": "phone",
+                "api_name": "show_alarms",
+                "method": "GET",
+                "path": "/phone/alarms",
+                "description": "Get a list of alarms.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "update_alarm": {
+                "app_name": "phone",
+                "api_name": "update_alarm",
+                "method": "PATCH",
+                "path": "/phone/alarms/{alarm_id}",
+                "description": "Update an alarm's settings.",
+                "parameters": [
+                    {"name": "alarm_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    result = adapter.execute_task_strategy(app_name="phone")
+
+    assert result["task_completed"] is True
+    assert result["_auto_final_answer"] is None
+    assert result["recommended_next_tool"] == {
+        "tool_name": "final_answer",
+        "arguments": {"answer": None},
+    }
+    assert "Do not run more AppWorld code" in result["strategy_guidance"]
 
 
 def test_execute_appworld_code_auto_prints_final_expression() -> None:
