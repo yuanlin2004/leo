@@ -1,46 +1,59 @@
 # AppWorld Status
 
-This file tracks AppWorld tasks that Leo currently passes in live evaluation runs.
+This file tracks Leo's AppWorld status after the architecture reset to LLM-authored AppWorld code.
 
-## Passing Tasks
+## Current Baseline
 
-| Task ID | App | Task Type | Status | Latest Live Artifact |
-| --- | --- | --- | --- | --- |
-| `82e2fac_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/82e2fac_1/result.json` |
-| `27e1026_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/27e1026_1/result.json` |
-| `23cf851_1` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_1/result.json` |
-| `23cf851_2` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_2/result.json` |
-| `23cf851_3` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_3/result.json` |
-| `cf6abd2_1` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/cf6abd2_1/result.json` |
-| `302c169_1` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_1/result.json` |
-| `302c169_2` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_2/result.json` |
-| `302c169_3` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_3/result.json` |
-| `68ee2c9_1` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_1/result.json` |
-| `68ee2c9_2` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_2/result.json` |
-| `cf6abd2_2` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/cf6abd2_2/result.json` |
-| `cf6abd2_3` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/cf6abd2_3/result.json` |
-| `68ee2c9_3` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/68ee2c9_3/result.json` |
-| `27e1026_2` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/27e1026_2/result.json` |
-| `27e1026_3` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/27e1026_3/result.json` |
+Leo no longer uses adapter-authored task-family solution code or `execute_appworld_task_strategy`.
+The AppWorld adapter now provides:
 
-## Live Evaluation Baseline
+- public task context
+- API discovery via `list_appworld_apis`
+- API schema lookup via `describe_appworld_api`
+- execution via `execute_appworld_code`
+- auth hints and task-plan guidance only
 
-- Provider: `openrouter`
-- Model: `nvidia/nemotron-3-super-120b-a12b:free`
-- Temperature: `0`
-- Run mode: `leo.cli.main evaluate`
-- Latest passing batch without code changes: `codex-appworld-new5b-20260314`
-- Latest full passing sweep after code changes: `codex-appworld-regression-20260314c`
+The model must write the Python snippet itself.
 
-## Regression Rule
+## LLM-Authored Code Baseline
 
-Whenever a new AppWorld task is enabled:
+| Task ID | App | Task Type | Status | Model | Latest Live Artifact |
+| --- | --- | --- | --- | --- | --- |
+| `82e2fac_1` | `spotify` | Question answering | Passing | `nvidia/nemotron-3-super-120b-a12b:free` | `/tmp/leo-appworld-runs/appworld-llm-code-baseline-82e2fac_1/82e2fac_1/result.json` |
+| `302c169_1` | `phone` | State mutation, null answer | Failing | `nvidia/nemotron-3-super-120b-a12b:free` | `/tmp/leo-appworld-runs/appworld-llm-code-baseline-302c169_1/302c169_1/result.json` |
 
-1. Add or update the task-specific Leo strategy/tooling.
-2. Run the new task live until it passes.
-3. If code changed, rerun every task listed in `Passing Tasks` before committing.
-4. If no code changed and the new task passes live, skip the historical rerun.
-5. Fix any regressions before committing.
-6. Update this file with the new passing task and latest artifact path.
+## Historical Strategy-Assisted Baseline
 
-Do not commit a new AppWorld task enablement after code changes unless the full passing set still passes live.
+The tasks below passed before the refactor, when Leo still had adapter-authored task-family strategy code. They are historical results only and must be revalidated before being counted again under the new architecture.
+
+- `82e2fac_1`
+- `27e1026_1`
+- `23cf851_1`
+- `23cf851_2`
+- `23cf851_3`
+- `cf6abd2_1`
+- `cf6abd2_2`
+- `cf6abd2_3`
+- `302c169_1`
+- `302c169_2`
+- `302c169_3`
+- `68ee2c9_1`
+- `68ee2c9_2`
+- `68ee2c9_3`
+- `27e1026_2`
+- `27e1026_3`
+
+## Notes
+
+- `82e2fac_1` passed with the model generating and executing its own AppWorld code.
+- `302c169_1` failed because the model entered a repeated mutation loop and never reached `final_answer`.
+- This suggests the current default model is viable for at least some retrieval tasks, but not yet reliable enough for all mutation tasks under the new architecture.
+
+## Revalidation Rule
+
+When AppWorld behavior changes:
+
+1. Run a small no-strategy baseline set first.
+2. Record both passes and failures in this file.
+3. Only promote a task back into the passing set after it passes live with LLM-authored code.
+4. If the model repeatedly loops or fails to synthesize correct AppWorld code, treat that as a model-quality issue first, not a reason to reintroduce adapter-authored task code.

@@ -308,7 +308,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 description=(
                     "Execute Python code against the live AppWorld task runtime and return the observed result. "
                     "AppWorld preloads task globals such as `apis`; inspect those instead of inventing external SDK clients. "
-                    "Use print(...) when you want a value echoed back in the tool result."
+                    "Use print(...) when you want a value echoed back in the tool result; the final expression is also auto-echoed when possible."
                 ),
                 parameters={
                     "type": "object",
@@ -317,7 +317,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                             "type": "string",
                             "description": (
                                 "Python code to execute inside the active AppWorld world. "
-                                "Prefer short snippets that inspect preloaded objects like `apis` and print discovered values."
+                                "Prefer short snippets that inspect preloaded objects like `apis`, then larger snippets that complete the task end to end."
                             ),
                         }
                     },
@@ -325,25 +325,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                     "additionalProperties": False,
                 },
                 handler=lambda code: self.execute_task_code(code),
-            ),
-            EnvironmentToolSpec(
-                name="execute_appworld_task_strategy",
-                description=(
-                    "Execute the recommended AppWorld strategy code derived from the active public task context "
-                    "when such a strategy is available. Prefer this over manual multi-step probing when "
-                    "list_appworld_apis recommends it."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "app_name": {
-                            "type": "string",
-                            "description": "Optional app name to scope the strategy, such as spotify.",
-                        }
-                    },
-                    "additionalProperties": False,
-                },
-                handler=lambda app_name=None: self.execute_task_strategy(app_name=app_name),
             ),
         ]
         specs.extend(
@@ -489,14 +470,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 "code": code,
                 "result": _normalize_external_payload(result),
             }
-            recommended_next_tool = self._build_recommended_strategy_tool()
-            if recommended_next_tool is not None:
-                payload["recommended_next_tool"] = recommended_next_tool
-                payload["strategy_guidance"] = (
-                    "A task-specific AppWorld strategy is available. Call "
-                    "execute_appworld_task_strategy next instead of manually reconstructing "
-                    "access tokens or writing additional probing code."
-                )
             return payload
 
         scripted = self._task_payload.get("execution_responses")
@@ -510,14 +483,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                     "code": code,
                     "result": _normalize_external_payload(payload),
                 }
-                recommended_next_tool = self._build_recommended_strategy_tool()
-                if recommended_next_tool is not None:
-                    response["recommended_next_tool"] = recommended_next_tool
-                    response["strategy_guidance"] = (
-                        "A task-specific AppWorld strategy is available. Call "
-                        "execute_appworld_task_strategy next instead of manually reconstructing "
-                        "access tokens or writing additional probing code."
-                    )
                 return response
         raise EnvironmentAdapterError(
             "AppWorld code execution is unavailable for this task source."
@@ -556,35 +521,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             max_results=max_results,
         )
         return {"query": text, "results": results}
-
-    def execute_task_strategy(self, *, app_name: str | None = None) -> dict[str, Any]:
-        name = str(app_name or "").strip() or "spotify"
-        strategy = self._build_task_strategy_hint(name)
-        if strategy is None:
-            raise EnvironmentAdapterError(
-                f"No AppWorld task strategy is available for app {name!r}."
-            )
-        code = str(strategy.get("example_code") or "").strip()
-        if not code:
-            raise EnvironmentAdapterError(
-                f"AppWorld task strategy for app {name!r} does not include executable code."
-            )
-        result = self.execute_task_code(code)
-        result["strategy_app_name"] = name
-        result["strategy_code"] = code
-        if "final_answer_after_strategy" in strategy and not _appworld_execution_failed(result):
-            auto_final_answer = strategy["final_answer_after_strategy"]
-            result["_auto_final_answer"] = auto_final_answer
-            result["task_completed"] = True
-            result["recommended_next_tool"] = {
-                "tool_name": "final_answer",
-                "arguments": {"answer": auto_final_answer},
-            }
-            result["strategy_guidance"] = (
-                "The task-specific AppWorld strategy already completed the required state change. "
-                "Do not run more AppWorld code. Call final_answer immediately."
-            )
-        return result
 
     def list_app_apis(
         self,
@@ -634,13 +570,9 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         auth_hint = self._build_auth_hint(name)
         if auth_hint is not None:
             payload["auth_hint"] = auth_hint
-        strategy_hint = self._build_task_strategy_hint(name)
-        if strategy_hint is not None:
-            payload["task_strategy_hint"] = strategy_hint
-            payload["recommended_next_tool"] = {
-                "tool_name": "execute_appworld_task_strategy",
-                "arguments": {"app_name": name},
-            }
+        task_plan_hint = self._build_task_plan_hint(name)
+        if task_plan_hint is not None:
+            payload["task_plan_hint"] = task_plan_hint
         return payload
 
     def describe_app_api(self, app_name: str, api_name: str) -> dict[str, Any]:
@@ -663,9 +595,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         auth_hint = self._build_api_auth_hint(app, reference[api])
         if auth_hint is not None:
             payload["auth_hint"] = auth_hint
-        recommended_next_tool = self._build_recommended_strategy_tool(app)
-        if recommended_next_tool is not None:
-            payload["recommended_next_tool"] = recommended_next_tool
         return payload
 
     def _save_outputs(self, outputs: dict[str, Any]) -> dict[str, Any]:
@@ -987,16 +916,6 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             if api_name.startswith("show_"):
                 score += 3
 
-        strategy = self._build_task_strategy_hint(app_name)
-        if strategy is not None:
-            recommended = {
-                str(item.get("api_name"))
-                for item in strategy.get("recommended_apis") or []
-                if isinstance(item, Mapping) and item.get("app_name") == app_name
-            }
-            if api_name in recommended:
-                score += 20
-
         return score
 
     def _build_auth_hint(self, app_name: str) -> dict[str, Any] | None:
@@ -1052,432 +971,114 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             hint.update(app_hint)
         return hint
 
-    def _build_recommended_strategy_tool(self, app_name: str | None = None) -> dict[str, Any] | None:
-        candidate = str(app_name or "").strip()
-        if candidate:
-            apps = [candidate]
-        elif self._context is not None:
-            apps = list(self._context.required_apps)
-        else:
-            apps = []
-        for app in apps:
-            if self._build_task_strategy_hint(app) is not None:
-                return {
-                    "tool_name": "execute_appworld_task_strategy",
-                    "arguments": {"app_name": app},
-                }
-        return None
-
-    def _build_task_strategy_hint(self, app_name: str) -> dict[str, Any] | None:
+    def _build_task_plan_hint(self, app_name: str) -> dict[str, Any] | None:
         if self._context is None:
             return None
         reference = self._world_api_reference.get(app_name)
         if not reference:
             return None
-        public_data = self._context.public_data
-        library_name = str(public_data.get("library_name") or "").lower().strip()
-        metric_adjective = str(public_data.get("metric_adjective") or "").lower().strip()
-        instruction = str(self._context.instruction or "").lower()
+
+        ranked_entries: list[tuple[int, str, Mapping[str, Any]]] = []
+        terms = self._build_api_query_terms(app_name, self._context.instruction.lower())
+        for api_name, entry in reference.items():
+            score = self._score_app_api(app_name, api_name, entry, terms)
+            if score > 0:
+                ranked_entries.append((score, api_name, entry))
+        ranked_entries.sort(key=lambda item: (-item[0], item[1]))
+
         recommended_apis: list[dict[str, str]] = []
-        flow: list[str] = []
-        if "supervisor" in self._world_api_reference:
+        seen: set[tuple[str, str]] = set()
+
+        def add_api(target_app: str, api_name: str, why: str) -> None:
+            key = (target_app, api_name)
+            if key in seen:
+                return
+            seen.add(key)
             recommended_apis.append(
                 {
-                    "app_name": "supervisor",
-                    "api_name": "show_account_passwords",
-                    "why": f"Fetch the stored password for the {app_name} account.",
+                    'app_name': target_app,
+                    'api_name': api_name,
+                    'why': why,
                 }
             )
-            flow.append(
-                f"Call supervisor.show_account_passwords and read the password for the {app_name} account."
-            )
-        if "login" in reference:
-            login_username_placeholder = "<supervisor email>"
-            if app_name == "phone":
-                login_username_placeholder = "<supervisor phone number>"
-            recommended_apis.append(
-                {
-                    "app_name": app_name,
-                    "api_name": "login",
-                    "why": f"Obtain the access_token required by {app_name} APIs.",
-                }
-            )
-            flow.append(
-                f"Call {app_name}.login(username={login_username_placeholder}, password=<{app_name} password>) and keep the returned access_token."
-            )
 
-        if app_name == "spotify" and library_name == "playlists":
-            if "show_playlist_library" not in reference or "show_song" not in reference:
-                return None
-            recommended_apis.append(
-                {
-                    "app_name": app_name,
-                    "api_name": "show_playlist_library",
-                    "why": "List the user's playlists and collect each playlist's song_ids.",
-                }
-            )
-            recommended_apis.append(
-                {
-                    "app_name": app_name,
-                    "api_name": "show_song",
-                    "why": f"Inspect each playlist song and compare {metric_adjective or 'like'} metadata such as like_count.",
-                }
-            )
-            flow.extend(
-                [
-                    "Call spotify.show_playlist_library(access_token=...) to get playlists and their song_ids.",
-                    "Call spotify.show_song(song_id=...) for each unique song_id from those playlists.",
-                    f"Compare the songs by {'like_count' if metric_adjective == 'liked' else metric_adjective or 'the requested metric'} and return only the song title.",
-                ]
-            )
-            metric_field = "like_count" if metric_adjective == "liked" else metric_adjective or "rating"
-            code_template = "\n".join(
-                [
-                    "passwords = apis.supervisor.show_account_passwords()",
-                    f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
-                    f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
-                    f"playlists = apis.{app_name}.show_playlist_library(access_token=access_token, page_limit=20)",
-                    "song_ids = sorted({song_id for playlist in playlists for song_id in playlist['song_ids']})",
-                    "best = None",
-                    "for song_id in song_ids:",
-                    f"    song = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
-                    f"    candidate = (song['{metric_field}'], song['title'])",
-                    "    if best is None or candidate > best:",
-                    "        best = candidate",
-                    "print(best[1])",
-                ]
-            )
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": code_template,
-            }
-
+        auth_hint = self._build_auth_hint(app_name)
         if (
-            app_name == "spotify"
-            and
-            public_data.get("oldest_or_newest") in {"oldest", "newest"}
-            and any(term in instruction for term in ("library", "libraries"))
-            and "song" in instruction
-            and "album" in instruction
-            and "playlist" in instruction
-            and {"show_song_library", "show_album_library", "show_playlist_library", "show_song"}.issubset(reference)
+            auth_hint is not None
+            and 'supervisor' in self._world_api_reference
+            and 'show_account_passwords' in self._world_api_reference['supervisor']
         ):
-            oldest_or_newest = str(public_data.get("oldest_or_newest") or "oldest")
-            comparator = "min" if oldest_or_newest == "oldest" else "max"
-            recommended_apis.extend(
-                [
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_song_library",
-                        "why": "List songs saved directly in the user's song library.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_album_library",
-                        "why": "List albums in the user's library and collect each album's song_ids and release_date.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_playlist_library",
-                        "why": "List playlists in the user's library and collect each playlist's song_ids.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_song",
-                        "why": "Resolve song titles and release dates for candidate song_ids.",
-                    },
-                ]
+            add_api(
+                'supervisor',
+                'show_account_passwords',
+                f'Fetch the stored password for the {app_name} account before logging in.',
             )
-            flow.extend(
-                [
-                    "Call spotify.show_song_library, spotify.show_album_library, and spotify.show_playlist_library across all pages.",
-                    "Collect direct song_ids, album song_ids, and playlist song_ids into one unique set.",
-                    "Use album release_date for album-library song_ids and spotify.show_song(song_id=...) for the remaining song release dates and final title lookup.",
-                    f"Choose the {oldest_or_newest} release_date and return only that song title.",
-                ]
+        if auth_hint is not None and 'login' in reference:
+            add_api(
+                app_name,
+                'login',
+                f'Obtain the access token required by the {app_name} APIs.',
             )
-            code_template = "\n".join(
-                [
-                    "from appworld.common.utils import find_all_from_pages",
-                    "passwords = apis.supervisor.show_account_passwords()",
-                    f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
-                    f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
-                    "song_id_to_release_date = {}",
-                    f"library_songs = find_all_from_pages(apis.{app_name}.show_song_library, access_token=access_token)",
-                    "for song in library_songs:",
-                    f"    details = apis.{app_name}.show_song(song_id=song['song_id'], access_token=access_token)",
-                    "    song_id_to_release_date[details['song_id']] = details['release_date']",
-                    f"library_albums = find_all_from_pages(apis.{app_name}.show_album_library, access_token=access_token)",
-                    "for album in library_albums:",
-                    "    for song_id in album['song_ids']:",
-                    "        song_id_to_release_date[song_id] = album['release_date']",
-                    f"playlist_library = find_all_from_pages(apis.{app_name}.show_playlist_library, access_token=access_token)",
-                    "for playlist in playlist_library:",
-                    "    for song_id in playlist['song_ids']:",
-                    "        if song_id not in song_id_to_release_date:",
-                    f"            details = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
-                    "            song_id_to_release_date[song_id] = details['release_date']",
-                    f"target_song_id = {comparator}(song_id_to_release_date, key=song_id_to_release_date.get)",
-                    f"target_song = apis.{app_name}.show_song(song_id=target_song_id, access_token=access_token)",
-                    "print(target_song['title'])",
-                ]
-            )
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": code_template,
-            }
 
-        if (
-            app_name == "venmo"
-            and "transaction" in instruction
-            and "like" in instruction
-            and "total" in instruction
-            and "show_transactions" in reference
+        for _score, api_name, entry in ranked_entries[:4]:
+            description = str(entry.get('description') or '').strip()
+            why = description or f'Relevant API for solving the {app_name} task.'
+            add_api(app_name, api_name, why)
+
+        if not recommended_apis:
+            return None
+
+        username_placeholder = (
+            '<supervisor phone number>'
+            if app_name == 'phone'
+            else '<supervisor email>'
+        )
+        suggested_flow = [
+            'Inspect the exact parameter names with describe_appworld_api before writing code.'
+        ]
+        if any(
+            item['app_name'] == 'supervisor'
+            and item['api_name'] == 'show_account_passwords'
+            for item in recommended_apis
         ):
-            sent_received = str(public_data.get("sent_received") or "").strip().lower()
-            threshold_duration = str(public_data.get("threshold_duration") or "").strip().lower()
-            if sent_received not in {"sent", "received", "sent or received"}:
-                sent_received = "sent or received"
-            if not threshold_duration:
-                threshold_duration = "month"
-            recommended_apis.extend(
-                [
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_transactions",
-                        "why": "List Venmo transactions filtered by direction, creation time, and minimum likes.",
-                    },
-                ]
+            suggested_flow.append(
+                f'Call supervisor.show_account_passwords and read the password for the {app_name} account.'
             )
-            flow.extend(
-                [
-                    f"Compute the start of this {threshold_duration} and use it as min_created_at.",
-                    f"Call venmo.show_transactions with min_like_count=1 and direction={sent_received!r} when applicable.",
-                    "Sum like_count across all returned transactions and return only that number.",
-                ]
+        if any(
+            item['app_name'] == app_name and item['api_name'] == 'login'
+            for item in recommended_apis
+        ):
+            suggested_flow.append(
+                f'Call {app_name}.login(username={username_placeholder}, password=<{app_name} password>) and keep the returned access_token inside the same code snippet.'
             )
-            direction_line = ""
-            if sent_received in {"sent", "received"}:
-                direction_line = f"query_kwargs['direction'] = '{sent_received}'"
-            code_lines = [
-                "from appworld.common.datetime import DateTime",
-                "from appworld.common.utils import find_all_from_pages",
-                "passwords = apis.supervisor.show_account_passwords()",
-                f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
-                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
-                f"threshold_datetime = DateTime.today().start_of('{threshold_duration}').to_date_string()",
-                "query_kwargs = {",
-                "    'min_like_count': 1,",
-                "    'min_created_at': threshold_datetime,",
-                "    'access_token': access_token,",
-                "}",
+        suggested_flow.extend(
+            [
+                'Write your own execute_appworld_code snippet that performs auth, fetches all relevant records or pages, and either prints the answer or applies the mutation.',
+                'Aggregate across every relevant record, page, or library before deciding on the final answer.',
             ]
-            if direction_line:
-                code_lines.append(direction_line)
-            code_lines.extend(
-                [
-                    f"transactions = find_all_from_pages(apis.{app_name}.show_transactions, **query_kwargs)",
-                    "total_likes = sum(item.get('like_count', 0) for item in transactions)",
-                    "print(total_likes)",
-                ]
+        )
+        if _looks_like_question_task(self._context.instruction):
+            suggested_flow.append(
+                'Print only the requested answer value from the snippet, then call final_answer with that bare value.'
             )
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": "\n".join(code_lines),
-            }
+            answer_format_hint = 'Return only the bare answer value.'
+        else:
+            suggested_flow.append(
+                'After the state change succeeds, call final_answer with answer=null.'
+            )
+            answer_format_hint = 'Return null after the mutation succeeds.'
 
-        if (
-            app_name == "simple_note"
-            and "bucket list" in instruction
-            and "mark" in instruction
-            and "search_notes" in reference
-            and "show_note" in reference
-            and "update_note" in reference
-        ):
-            activity = str(public_data.get("bucket_list_activity") or "").strip()
-            done_or_not = str(public_data.get("done_or_not") or "").strip().lower()
-            if not activity or done_or_not not in {"done", "not done"}:
-                return None
-            source_marker = "[ ]" if done_or_not == "done" else "[x]"
-            target_marker = "[x]" if done_or_not == "done" else "[ ]"
-            recommended_apis.extend(
-                [
-                    {
-                        "app_name": app_name,
-                        "api_name": "search_notes",
-                        "why": "Find the Bucket List note by query without guessing its id.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_note",
-                        "why": "Load the full note content before editing.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "update_note",
-                        "why": "Write back the updated note content while preserving other fields.",
-                    },
-                ]
-            )
-            flow.extend(
-                [
-                    "Search notes for 'bucket list' and pick the matching note.",
-                    "Load the note content, replace only the matching checklist line, and update the note content.",
-                    "Return null because this task is satisfied by the note mutation itself.",
-                ]
-            )
-            code_lines = [
-                "from appworld.common.utils import find_one_from_pages",
-                "passwords = apis.supervisor.show_account_passwords()",
-                "simple_note_password = next(item['password'] for item in passwords if item['account_name'] == 'simple_note')",
-                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password=simple_note_password)['access_token']",
-                f"bucket_list_note = find_one_from_pages(apis.{app_name}.search_notes, access_token=access_token, query='bucket list')",
-                f"note = apis.{app_name}.show_note(note_id=bucket_list_note['note_id'], access_token=access_token)",
-                "note_content = note['content']",
-                f"updated_note_content = note_content.replace('{source_marker} {activity}', '{target_marker} {activity}')",
-                f"apis.{app_name}.update_note(note_id=bucket_list_note['note_id'], content=updated_note_content, access_token=access_token)",
-                "print(None)",
-            ]
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": "\n".join(code_lines),
-                "final_answer_after_strategy": None,
-            }
-
-        if (
-            app_name == "phone"
-            and public_data.get("alarm_type") in {"go-to-sleep", "wake-up"}
-            and public_data.get("later_earlier") in {"later", "earlier"}
-            and public_data.get("metric_name") in {"hours", "minutes"}
-            and {"login", "show_alarms", "update_alarm"}.issubset(reference)
-        ):
-            alarm_type = str(public_data.get("alarm_type") or "")
-            direction = str(public_data.get("later_earlier") or "")
-            metric_name = str(public_data.get("metric_name") or "")
-            metric_value = public_data.get("metric_value")
-            if not isinstance(metric_value, (int, float)):
-                return None
-            label_substring = "Go to sleep" if alarm_type == "go-to-sleep" else "Wake Up"
-            username = str(
-                self._context.supervisor.get("phone_number") or "<supervisor phone number>"
-            )
-            time_operation = "add" if direction == "later" else "subtract"
-            minute_delta = int(metric_value * 60) if metric_name == "hours" else int(metric_value)
-            recommended_apis.extend(
-                [
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_alarms",
-                        "why": "Load alarms, find the target alarm by label, and inspect the other alarms to disable.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "update_alarm",
-                        "why": "Move the target alarm and disable the remaining enabled alarms.",
-                    },
-                ]
-            )
-            flow.extend(
-                [
-                    f"Call phone.show_alarms(access_token=...) and find the alarm whose label contains {label_substring!r}.",
-                    f"Move that alarm {metric_value:g} {metric_name} {direction}.",
-                    "Disable every other enabled alarm.",
-                    "Return null because this task is satisfied by the alarm updates.",
-                ]
-            )
-            code_lines = [
-                "from appworld.common.datetime import Time",
-                "from appworld.common.utils import find_all_from_pages, find_one_from_pages",
-                "passwords = apis.supervisor.show_account_passwords()",
-                "phone_password = next(item['password'] for item in passwords if item['account_name'] == 'phone')",
-                f"access_token = apis.{app_name}.login(username='{username}', password=phone_password)['access_token']",
-                f"target_alarm = find_one_from_pages(apis.{app_name}.show_alarms, access_token=access_token, find_by={{'label__has_substring': '{label_substring}'}})",
-                "target_alarm_id = target_alarm['alarm_id']",
-                "target_alarm_time = Time.from_string(target_alarm['time'])",
-                f"new_target_alarm_time = target_alarm_time.{time_operation}(minutes={minute_delta})",
-                f"apis.{app_name}.update_alarm(alarm_id=target_alarm_id, time=new_target_alarm_time.to_string(), access_token=access_token)",
-                f"alarms = find_all_from_pages(apis.{app_name}.show_alarms, access_token=access_token)",
-                "for alarm in alarms:",
-                "    if alarm['alarm_id'] != target_alarm_id and alarm['enabled']:",
-                f"        apis.{app_name}.update_alarm(alarm_id=alarm['alarm_id'], enabled=False, access_token=access_token)",
-                "print(None)",
-            ]
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": "\n".join(code_lines),
-                "final_answer_after_strategy": None,
-            }
-
-        if (
-            app_name == "file_system"
-            and "downloads_directory" in public_data
-            and "trash_directory" in public_data
-            and "prefix_format" in public_data
-            and {"login", "show_directory", "show_file", "move_file"}.issubset(reference)
-        ):
-            downloads_directory = str(public_data.get("downloads_directory") or "").strip()
-            trash_directory = str(public_data.get("trash_directory") or "").strip()
-            prefix_format = str(public_data.get("prefix_format") or "").strip()
-            if not downloads_directory or not trash_directory or not prefix_format:
-                return None
-            recommended_apis.extend(
-                [
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_directory",
-                        "why": "List every file path in the downloads directory before renaming or moving anything.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "show_file",
-                        "why": "Read each file's created_at timestamp to decide the prefix and whether it stays in downloads or moves to trash.",
-                    },
-                    {
-                        "app_name": app_name,
-                        "api_name": "move_file",
-                        "why": "Rename each file with the date prefix and move pre-this-year files into trash.",
-                    },
-                ]
-            )
-            flow.extend(
-                [
-                    f"Call file_system.show_directory(directory_path={downloads_directory!r}, access_token=...) to list all download files.",
-                    "For each file path, call file_system.show_file(...) and parse created_at.",
-                    f"Prefix every filename with its created_at formatted as {prefix_format!r}.",
-                    f"Keep files from the current year in {downloads_directory!r}; move older files into {trash_directory!r}.",
-                    "Return null because this task is satisfied by the file-system mutations.",
-                ]
-            )
-            code_lines = [
-                "from appworld.common.datetime import DateTime",
-                "passwords = apis.supervisor.show_account_passwords()",
-                "file_system_password = next(item['password'] for item in passwords if item['account_name'] == 'file_system')",
-                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password=file_system_password)['access_token']",
-                f"file_paths = apis.{app_name}.show_directory(directory_path={downloads_directory!r}, access_token=access_token)",
-                "current_year = DateTime.now().year",
-                "for file_path in file_paths:",
-                f"    file_record = apis.{app_name}.show_file(file_path=file_path, access_token=access_token)",
-                "    created_at = DateTime.from_datetime_string(file_record['created_at'])",
-                f"    prefix = created_at.format({prefix_format!r})",
-                "    file_name = file_record['path'].split('/')[-1]",
-                f"    destination_directory = {downloads_directory!r} if created_at.year == current_year else {trash_directory!r}",
-                "    destination_file_path = destination_directory + prefix + file_name",
-                f"    apis.{app_name}.move_file(source_file_path=file_path, destination_file_path=destination_file_path, access_token=access_token)",
-                "print(None)",
-            ]
-            return {
-                "recommended_apis": recommended_apis,
-                "suggested_flow": flow,
-                "example_code": "\n".join(code_lines),
-                "final_answer_after_strategy": None,
-            }
-
-        return None
+        return {
+            'goal': self._context.instruction,
+            'recommended_apis': recommended_apis,
+            'suggested_flow': suggested_flow,
+            'code_generation_notes': [
+                'Write the Python snippet yourself; the adapter does not supply task-specific solution code.',
+                'Prefer one coherent snippet once the API names and auth flow are known.',
+                'If pagination or helper utilities are needed, inspect the docs first and then import only AppWorld-provided helpers.',
+            ],
+            'answer_format_hint': answer_format_hint,
+        }
 
     def _persist_output_artifact(self, record: dict[str, Any]) -> Path | None:
         if self._task_output_dir is None:
@@ -1743,6 +1344,25 @@ def _ensure_observable_code(code: str) -> str:
         return ast.unparse(tree)
     except Exception:
         return code
+
+
+def _looks_like_question_task(instruction: str) -> bool:
+    text = str(instruction or "").strip().lower()
+    if not text:
+        return False
+    question_prefixes = (
+        "what",
+        "which",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how many",
+        "how much",
+        "how long",
+        "how old",
+    )
+    return text.endswith("?") or text.startswith(question_prefixes)
 
 
 @contextmanager

@@ -349,9 +349,8 @@ def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "inventing `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "list_appworld_apis" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "describe_appworld_api" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "task_strategy_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "example_code" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "task_plan_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "write the execute_appworld_code snippet yourself" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "recommended_next_tool" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
