@@ -6,12 +6,17 @@ This file tracks AppWorld tasks that Leo currently passes in live evaluation run
 
 | Task ID | App | Task Type | Status | Latest Live Artifact |
 | --- | --- | --- | --- | --- |
-| `82e2fac_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/82e2fac_1/result.json` |
-| `27e1026_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/27e1026_1/result.json` |
-| `23cf851_1` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/23cf851_1/result.json` |
-| `cf6abd2_1` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/cf6abd2_1/result.json` |
-| `302c169_1` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/302c169_1/result.json` |
-| `68ee2c9_1` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314b/68ee2c9_1/result.json` |
+| `82e2fac_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/82e2fac_1/result.json` |
+| `27e1026_1` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/27e1026_1/result.json` |
+| `23cf851_1` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_1/result.json` |
+| `23cf851_2` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_2/result.json` |
+| `23cf851_3` | `venmo` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/23cf851_3/result.json` |
+| `cf6abd2_1` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/cf6abd2_1/result.json` |
+| `302c169_1` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_1/result.json` |
+| `302c169_2` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_2/result.json` |
+| `302c169_3` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_3/result.json` |
+| `68ee2c9_1` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_1/result.json` |
+| `68ee2c9_2` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_2/result.json` |
 
 ## Live Evaluation Baseline
 
@@ -19,7 +24,7 @@ This file tracks AppWorld tasks that Leo currently passes in live evaluation run
 - Model: `nvidia/nemotron-3-super-120b-a12b:free`
 - Temperature: `0`
 - Run mode: `leo.cli.main evaluate`
-- Latest full passing sweep: `codex-appworld-regression-20260314b`
+- Latest full passing sweep: `codex-appworld-regression-20260314c`
 
 ## Regression Rule
 
