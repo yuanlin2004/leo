@@ -94,6 +94,37 @@ Verification:
 - Execution state is isolated per session/run via registry reset behavior.
 - `pytest` passed with `73 passed, 3 skipped` when this item was implemented.
 
+### D. Implement Milestone 4 Environment Adapter Framework
+
+Status: completed on 2026-03-13.
+
+Goal: complete Milestone 4 from [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md) by adding a generic environment adapter interface, task-scoped tool binding, and a first AppWorld adapter that exposes only public task data.
+
+Implemented:
+- Added `EnvironmentAdapter`, `EnvironmentToolSpec`, and `EnvironmentAdapterError` in [adapters.py](/Users/yuan/Documents/GitHub/leo/src/leo/environments/adapters.py).
+- Added `AppWorldTaskContext` and `AppWorldEnvironmentAdapter` for local AppWorld-style task payloads, including hidden-field filtering and output evaluation hooks.
+- Added `EnvironmentToolProvider` so environment-scoped tools participate through the same provider architecture as local, MCP, and skill tools.
+- Updated `ToolsRegistry` to attach and detach environment adapters, expose public environment context, and keep task-scoped tools available only while an adapter is active.
+- Added runtime context injection so agents receive public environment task context as transient system messages without direct AppWorld-specific logic in the agent loop.
+- Split transient run-state reset from full session teardown so one-shot environment-backed runs do not discard the active environment before the first model call.
+- Enabled the environment provider in both builtin capability profiles, while keeping environment tools invisible unless an adapter is actually attached.
+
+Candidate files:
+- [src/leo/environments/__init__.py](/Users/yuan/Documents/GitHub/leo/src/leo/environments/__init__.py)
+- [src/leo/environments/adapters.py](/Users/yuan/Documents/GitHub/leo/src/leo/environments/adapters.py)
+- [src/leo/tools/providers.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/providers.py)
+- [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [src/leo/tools/profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py)
+- [src/leo/agents/react_agent.py](/Users/yuan/Documents/GitHub/leo/src/leo/agents/react_agent.py)
+- [src/leo/agents/simple_agent.py](/Users/yuan/Documents/GitHub/leo/src/leo/agents/simple_agent.py)
+- [test/test_environment_adapters.py](/Users/yuan/Documents/GitHub/leo/test/test_environment_adapters.py)
+
+Verification:
+- Environment-backed runs initialize and tear down cleanly through the registry lifecycle.
+- Task-scoped environment tools are available only while an environment adapter is attached.
+- Hidden AppWorld fields are excluded from public task context, tool results, and injected model context.
+- `pytest` passed with `78 passed, 3 skipped` when this item was implemented.
+
 ## Foundation
 
 ### 0. Add Core Coding-Agent Tools

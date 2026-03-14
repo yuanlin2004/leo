@@ -178,8 +178,8 @@ class ReActAgent(Agent):
         self,
         conversation: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        protected_context = self.tools_registry.get_protected_skill_context()
-        if not protected_context:
+        runtime_messages = self.tools_registry.get_runtime_context_messages()
+        if not runtime_messages:
             return conversation
         system_message = (
             conversation[0]
@@ -189,7 +189,7 @@ class ReActAgent(Agent):
         remainder = conversation[1:] if conversation else []
         return [
             system_message,
-            {"role": "system", "content": protected_context},
+            *runtime_messages,
             *remainder,
         ]
 
@@ -440,7 +440,7 @@ class ReActAgent(Agent):
         raise LeoLLMException("Max iterations reached without a final response.")
 
     def run(self, user_input: str, max_iterations: int = 10) -> str:
-        self.tools_registry.reset_session_state()
+        self.tools_registry.reset_run_state(preserve_environment=True)
         conversation = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_input},

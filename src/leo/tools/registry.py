@@ -6,12 +6,14 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from leo.environments import EnvironmentAdapter, EnvironmentAdapterError
 from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
 from leo.tools.mcp import MCPServerConfig
 from leo.tools.profiles import CapabilityProfile, resolve_capability_profile
 from leo.tools.providers import (
+    EnvironmentToolProvider,
     LocalToolProvider,
     MCPToolProvider,
     SkillToolProvider,
@@ -45,6 +47,7 @@ class ToolsRegistry:
         self._capability_profile = resolve_capability_profile(capability_profile)
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
         self._local_provider = LocalToolProvider()
+        self._environment_provider = EnvironmentToolProvider()
         self._mcp_provider = MCPToolProvider(
             mcp_servers=mcp_servers,
             mcp_config_path=mcp_config_path,
@@ -55,6 +58,7 @@ class ToolsRegistry:
         )
         self._providers = [
             self._local_provider,
+            self._environment_provider,
             self._mcp_provider,
             self._skill_provider,
         ]
@@ -274,6 +278,7 @@ class ToolsRegistry:
     def _provider_entries(self) -> list[tuple[str, Any]]:
         return [
             ("local", self._local_provider),
+            ("environment", self._environment_provider),
             ("mcp", self._mcp_provider),
             ("skills", self._skill_provider),
         ]
@@ -482,9 +487,82 @@ class ToolsRegistry:
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
-    def reset_session_state(self) -> None:
+    def reset_run_state(self, *, preserve_environment: bool = False) -> None:
         self._core_runtime.reset_state()
+        if not preserve_environment:
+            self.detach_environment()
         self._skill_provider.reset_session_state()
+
+    def reset_session_state(self) -> None:
+        self.reset_run_state(preserve_environment=False)
+
+    def attach_environment(self, adapter: EnvironmentAdapter) -> dict[str, Any]:
+        self.detach_environment()
+        try:
+            context = adapter.initialize()
+            existing_tool_names = self._current_tool_names()
+            for tool in adapter.get_tool_specs():
+                if tool.name in existing_tool_names:
+                    raise ToolsRegistryError(f"Duplicate tool name: {tool.name}")
+            self._environment_provider.bind_adapter(adapter)
+        except (EnvironmentAdapterError, ToolProviderError) as exc:
+            try:
+                adapter.cleanup()
+            except EnvironmentAdapterError:
+                pass
+            raise ToolsRegistryError(str(exc)) from exc
+        except ToolsRegistryError:
+            try:
+                adapter.cleanup()
+            except EnvironmentAdapterError:
+                pass
+            raise
+
+        return {
+            "environment": adapter.environment_name,
+            "context": context,
+            "tool_names": sorted(self._environment_provider.get_registered_tools()),
+        }
+
+    def detach_environment(self) -> None:
+        adapter = self._environment_provider.adapter
+        self._environment_provider.clear()
+        if adapter is None:
+            return
+        try:
+            adapter.cleanup()
+        except EnvironmentAdapterError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def has_active_environment(self) -> bool:
+        return self._environment_provider.adapter is not None
+
+    def get_environment_public_context(self) -> dict[str, Any] | None:
+        adapter = self._environment_provider.adapter
+        if adapter is None:
+            return None
+        try:
+            return adapter.get_public_task_context()
+        except EnvironmentAdapterError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def save_environment_outputs(self, outputs: dict[str, Any]) -> dict[str, Any]:
+        adapter = self._environment_provider.adapter
+        if adapter is None:
+            raise ToolsRegistryError("No active environment.")
+        try:
+            return adapter.save_outputs(outputs)
+        except EnvironmentAdapterError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def evaluate_environment_outputs(self) -> dict[str, Any] | None:
+        adapter = self._environment_provider.adapter
+        if adapter is None:
+            raise ToolsRegistryError("No active environment.")
+        try:
+            return adapter.evaluate_outputs()
+        except EnvironmentAdapterError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
 
     def restore_activated_skills(self, skill_ids: list[str]) -> list[dict[str, Any]]:
         try:
@@ -543,6 +621,22 @@ class ToolsRegistry:
 
     def get_protected_skill_context(self) -> str:
         return self._skill_provider.get_protected_skill_context()
+
+    def get_runtime_context_messages(self) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        protected_context = self.get_protected_skill_context()
+        if protected_context:
+            messages.append({"role": "system", "content": protected_context})
+
+        adapter = self._environment_provider.adapter
+        if adapter is not None:
+            try:
+                rendered_context = adapter.render_prompt_context()
+            except EnvironmentAdapterError as exc:
+                raise ToolsRegistryError(str(exc)) from exc
+            messages.append({"role": "system", "content": rendered_context})
+
+        return messages
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [registered.schema for registered in self._visible_registered_tools().values()]

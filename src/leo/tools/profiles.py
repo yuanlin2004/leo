@@ -36,11 +36,11 @@ class CapabilityProfile:
 BUILTIN_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
     "generic": CapabilityProfile(
         name="generic",
-        enabled_providers=frozenset({"local", "mcp", "skills"}),
+        enabled_providers=frozenset({"local", "environment", "mcp", "skills"}),
     ),
     "benchmark-environment": CapabilityProfile(
         name="benchmark-environment",
-        enabled_providers=frozenset({"local"}),
+        enabled_providers=frozenset({"local", "environment"}),
         extra_system_prompt=(
             "\nYou are operating in a benchmark-oriented restricted environment. "
             "Use only the tools exposed by the selected profile or environment."
