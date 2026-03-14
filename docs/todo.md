@@ -2,6 +2,42 @@
 
 Date: 2026-03-13
 
+## P0
+
+### A. Finish Milestone 1 Provider Refactor
+
+Status: completed on 2026-03-13.
+
+Goal: complete the provider-based tool architecture required by [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md), instead of continuing to grow `ToolsRegistry` as a single direct owner of every tool.
+
+Why this is P0:
+- The current behavior mostly satisfies Milestone 1 acceptance criteria, but the required architecture is still missing.
+- Later AppWorld milestones assume provider composition exists.
+- MCP support was added, but it was added directly into `ToolsRegistry`, not through a generic provider model.
+
+Implemented:
+- Added `ToolProvider` and concrete providers for local tools, MCP tools, and skill-contributed tools.
+- Refactored `ToolsRegistry` into a composition layer over providers instead of a monolithic direct owner.
+- Added `LocalToolProvider` for core tools, meta tools, and directly registered tools.
+- Added `SkillToolProvider` for skill discovery, activation, and active skill tool execution.
+- Added `MCPToolProvider` so MCP tools participate through the same provider abstraction.
+- Preserved agent-facing semantics so `ReActAgent` and `SimpleAgent` did not need public API changes.
+- Preserved `/tools`, `/skills`, and `/skill <name>` behavior.
+
+Candidate files:
+- [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [src/leo/tools/providers.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/providers.py)
+- [src/leo/tools/__init__.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/__init__.py)
+- [src/leo/agents/react_agent.py](/Users/yuan/Documents/GitHub/leo/src/leo/agents/react_agent.py)
+- [src/leo/agents/simple_agent.py](/Users/yuan/Documents/GitHub/leo/src/leo/agents/simple_agent.py)
+- [docs/leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md)
+
+Verification:
+- `ToolProvider`, `LocalToolProvider`, `SkillToolProvider`, and `MCPToolProvider` exist.
+- `ToolsRegistry` aggregates providers instead of owning every tool path directly.
+- Existing chat, ask, skill, and MCP tests still pass with only minimal fixture updates.
+- `pytest` passed with `67 passed, 3 skipped` when this item was implemented.
+
 ## Foundation
 
 ### 0. Add Core Coding-Agent Tools

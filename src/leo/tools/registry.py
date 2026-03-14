@@ -3,29 +3,23 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from leo.skills import (
-    SkillActivationResult,
-    SkillsCatalog,
-    SkillsCatalogError,
-)
-from leo.tools.core import CoreToolRuntime, build_core_tool_specs
-from leo.tools.mcp import MCPServerConfig, MCPToolRuntime
+from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
+from leo.tools.core import CoreToolRuntime, build_core_tool_specs
+from leo.tools.mcp import MCPServerConfig
+from leo.tools.providers import (
+    LocalToolProvider,
+    MCPToolProvider,
+    SkillToolProvider,
+    ToolProviderError,
+)
 
 
 class ToolsRegistryError(Exception):
     pass
-
-
-@dataclass
-class RegisteredTool:
-    schema: dict[str, Any]
-    handler: Callable[..., Any]
-    provenance: str
 
 
 _FILE_EXTENSION_SKILL_MAP = {
@@ -46,18 +40,22 @@ class ToolsRegistry:
         mcp_servers: list[MCPServerConfig] | None = None,
         mcp_config_path: str | Path | None = None,
     ) -> None:
-        self._tools: dict[str, RegisteredTool] = {}
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
-        self._mcp_runtime = MCPToolRuntime.from_sources(
-            configs=mcp_servers,
-            config_path=mcp_config_path,
+        self._local_provider = LocalToolProvider()
+        self._mcp_provider = MCPToolProvider(
+            mcp_servers=mcp_servers,
+            mcp_config_path=mcp_config_path,
         )
-        self._catalog = SkillsCatalog(
-            project_root=skills_root,
-            user_root=user_skills_root,
+        self._skill_provider = SkillToolProvider(
+            skills_root=skills_root,
+            user_skills_root=user_skills_root,
         )
+        self._providers = [
+            self._local_provider,
+            self._mcp_provider,
+            self._skill_provider,
+        ]
         self._register_core_tools()
-        self._register_mcp_tools()
         self._register_meta_tools()
 
     def _register_core_tools(self) -> None:
@@ -70,20 +68,6 @@ class ToolsRegistry:
                 parameters=parameters,
                 handler=handler,
                 provenance="runtime:core",
-            )
-
-    def _register_mcp_tools(self) -> None:
-        for tool in self._mcp_runtime.list_tool_definitions():
-            self.register_tool(
-                name=tool.name,
-                description=tool.description,
-                parameters=tool.input_schema,
-                handler=lambda _tool=tool, **kwargs: self._mcp_runtime.invoke_tool(
-                    _tool.server_name,
-                    _tool.name,
-                    **kwargs,
-                ),
-                provenance=f"mcp:{tool.server_name}",
             )
 
     def _register_meta_tools(self) -> None:
@@ -239,6 +223,32 @@ class ToolsRegistry:
             provenance="runtime:core",
         )
 
+    def _registered_tools(self) -> dict[str, Any]:
+        aggregated: dict[str, Any] = {}
+        for provider in self._providers:
+            for name, registered in provider.get_registered_tools().items():
+                if name in aggregated:
+                    raise ToolsRegistryError(f"Duplicate tool name: {name}")
+                aggregated[name] = registered
+        return aggregated
+
+    def _tool_name_exists(self, tool_name: str) -> bool:
+        return any(provider.has_tool(tool_name) for provider in self._providers)
+
+    def _current_tool_names(self, *, exclude_skill_tools: bool = False) -> set[str]:
+        names: set[str] = set()
+        for provider in self._providers:
+            if exclude_skill_tools and provider is self._skill_provider:
+                continue
+            names.update(provider.get_registered_tools())
+        return names
+
+    def _resolve_provider(self, tool_name: str) -> Any | None:
+        for provider in self._providers:
+            if provider.has_tool(tool_name):
+                return provider
+        return None
+
     def register_tool(
         self,
         *,
@@ -248,95 +258,67 @@ class ToolsRegistry:
         handler: Callable[..., Any],
         provenance: str = "runtime:user",
     ) -> None:
-        if name in self._tools:
+        if self._tool_name_exists(name):
             raise ToolsRegistryError(f"Duplicate tool name: {name}")
-        self._tools[name] = RegisteredTool(
-            schema={
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": description,
-                    "parameters": parameters,
-                },
-            },
-            handler=handler,
-            provenance=provenance,
-        )
-
-    def _register_skill_tools(self, activation: SkillActivationResult) -> None:
-        for tool in activation.tools:
-            self.register_tool(
-                name=tool.name,
-                description=tool.description,
-                parameters=tool.parameters,
-                handler=tool.handler,
-                provenance=f"skill:{activation.skill_id}",
+        try:
+            self._local_provider.register_tool(
+                name=name,
+                description=description,
+                parameters=parameters,
+                handler=handler,
+                provenance=provenance,
             )
-
-    def _remove_skill_tools(self) -> None:
-        skill_tool_names = [
-            name
-            for name, registered in self._tools.items()
-            if registered.provenance.startswith("skill:")
-        ]
-        for name in skill_tool_names:
-            self._tools.pop(name, None)
+        except ToolProviderError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
 
     def refresh_skills(self) -> None:
-        self._catalog.refresh()
+        self._skill_provider.refresh_skills()
 
     def list_available_skills(self) -> list[dict[str, Any]]:
-        return [summary.to_dict() for summary in self._catalog.list_available_skills()]
+        return self._skill_provider.list_available_skills()
 
     def list_mcp_servers(self) -> list[dict[str, Any]]:
-        return self._mcp_runtime.list_server_statuses()
+        return self._mcp_provider.list_server_statuses()
 
     def get_skill_summary(self, skill_name: str) -> dict[str, Any]:
-        return self._catalog.get_skill_summary(skill_name).to_dict()
-
-    def describe_skill(self, skill_name: str) -> str:
-        return self._catalog.describe_skill(skill_name)
-
-    def activate_skill(self, skill_name: str) -> dict[str, Any]:
         try:
-            activation = self._catalog.activate_skill(
-                skill_name,
-                active_runtime_tool_names=set(self._tools),
-            )
+            return self._skill_provider.get_skill_summary(skill_name)
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
-        if activation.already_activated:
-            return activation.to_dict()
-
+    def describe_skill(self, skill_name: str) -> str:
         try:
-            self._register_skill_tools(activation)
-        except Exception as exc:
-            try:
-                self._catalog.deactivate_skill(skill_name)
-            except SkillsCatalogError:
-                pass
+            return self._skill_provider.describe_skill(skill_name)
+        except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
+    def activate_skill(self, skill_name: str) -> dict[str, Any]:
+        try:
+            activation = self._skill_provider.activate_skill(
+                skill_name,
+                active_runtime_tool_names=self._current_tool_names(
+                    exclude_skill_tools=True
+                ),
+            )
+        except (SkillsCatalogError, ToolProviderError) as exc:
+            raise ToolsRegistryError(str(exc)) from exc
         return activation.to_dict()
 
     def get_skill_resource(self, skill_name: str, resource_path: str) -> dict[str, Any]:
         try:
-            return self._catalog.load_skill_resource(skill_name, resource_path)
+            return self._skill_provider.get_skill_resource(skill_name, resource_path)
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
     def get_skill_requirements(self, skill_name: str) -> list[dict[str, Any]]:
         try:
-            return [
-                item.to_dict() for item in self._catalog.get_skill_requirements(skill_name)
-            ]
+            return self._skill_provider.get_skill_requirements(skill_name)
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
     def check_skill_readiness(self, skill_name: str) -> dict[str, Any]:
         try:
-            inspection = self._catalog.inspect_skill(skill_name)
+            inspection = self._skill_provider.inspect_skill(skill_name)
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
@@ -447,9 +429,7 @@ class ToolsRegistry:
 
     def list_skill_commands(self, skill_name: str) -> list[dict[str, Any]]:
         try:
-            return [
-                item.to_dict() for item in self._catalog.list_skill_commands(skill_name)
-            ]
+            return self._skill_provider.list_skill_commands(skill_name)
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
@@ -462,7 +442,7 @@ class ToolsRegistry:
         timeout_ms: int = 30000,
     ) -> dict[str, Any]:
         try:
-            result = self._catalog.run_skill_command(
+            return self._skill_provider.run_skill_command(
                 skill_name,
                 command_name,
                 args=args,
@@ -470,31 +450,25 @@ class ToolsRegistry:
             )
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
-        return result.to_dict()
 
     def reset_session_state(self) -> None:
         self._core_runtime.reset_state()
-        self._remove_skill_tools()
-        self._catalog.reset_session_state()
+        self._skill_provider.reset_session_state()
 
     def restore_activated_skills(self, skill_ids: list[str]) -> list[dict[str, Any]]:
-        self.reset_session_state()
-        restored_payloads: list[dict[str, Any]] = []
         try:
-            activations = self._catalog.restore_activated_skills(
+            return self._skill_provider.restore_activated_skills(
                 skill_ids,
-                active_runtime_tool_names=set(self._tools),
+                active_runtime_tool_names=self._current_tool_names(
+                    exclude_skill_tools=True
+                ),
             )
-            for activation in activations:
-                self._register_skill_tools(activation)
-                restored_payloads.append(activation.to_dict())
-        except Exception as exc:
+        except (SkillsCatalogError, ToolProviderError) as exc:
             self.reset_session_state()
             raise ToolsRegistryError(str(exc)) from exc
-        return restored_payloads
 
     def get_activated_skill_ids(self) -> list[str]:
-        return self._catalog.get_activated_skill_ids()
+        return self._skill_provider.get_activated_skill_ids()
 
     def activate_relevant_skills_for_input(self, user_input: str) -> list[dict[str, Any]]:
         text = (user_input or "").strip()
@@ -537,69 +511,37 @@ class ToolsRegistry:
         return activations
 
     def get_protected_skill_context(self) -> str:
-        activated = self._catalog.get_activated_skills()
-        if not activated:
-            return ""
-
-        lines = [
-            "Activated skill instructions:",
-        ]
-        for item in activated:
-            resource_note = ""
-            if item.resources:
-                preview = ", ".join(item.resources[:8])
-                if len(item.resources) > 8:
-                    preview += ", ..."
-                resource_note = (
-                    "\nBundled resources available via get_skill_resource: "
-                    f"{preview}"
-                )
-            requirement_note = ""
-            if item.requirements:
-                preview = ", ".join(requirement.name for requirement in item.requirements[:6])
-                if len(item.requirements) > 6:
-                    preview += ", ..."
-                requirement_note = (
-                    "\nRequirements available via get_skill_requirements: "
-                    f"{preview}"
-                )
-            command_note = ""
-            if item.commands:
-                preview = ", ".join(command.name for command in item.commands[:6])
-                if len(item.commands) > 6:
-                    preview += ", ..."
-                command_note = (
-                    "\nRunnable commands available via list_skill_commands/run_skill_command: "
-                    f"{preview}"
-                )
-            lines.extend(
-                [
-                    "",
-                    f"[{item.manifest.name}]",
-                    (item.instructions or "(no additional instructions)")
-                    + resource_note
-                    + requirement_note
-                    + command_note,
-                ]
-            )
-        return "\n".join(lines).strip()
+        return self._skill_provider.get_protected_skill_context()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        return [registered.schema for registered in self._tools.values()]
+        schemas: list[dict[str, Any]] = []
+        for provider in self._providers:
+            schemas.extend(provider.get_tool_schemas())
+        return schemas
 
     def get_all_tools(self) -> dict[str, str]:
-        return {
-            name: registered.schema["function"]["description"]
-            for name, registered in self._tools.items()
-        }
+        tools: dict[str, str] = {}
+        for provider in self._providers:
+            for name, description in provider.get_all_tools().items():
+                if name in tools:
+                    raise ToolsRegistryError(f"Duplicate tool name: {name}")
+                tools[name] = description
+        return tools
 
     def get_tool_provenance(self, tool_name: str) -> str:
-        registered = self._tools.get(tool_name)
-        if registered is None:
+        provider = self._resolve_provider(tool_name)
+        if provider is None:
             raise ToolsRegistryError(f"Unknown tool: {tool_name}")
-        return registered.provenance
+        try:
+            return provider.get_tool_provenance(tool_name)
+        except ToolProviderError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
 
     def execute(self, tool_name: str, **tool_args: Any) -> Any:
-        if tool_name not in self._tools:
+        provider = self._resolve_provider(tool_name)
+        if provider is None:
             raise ToolsRegistryError(f"Unknown tool: {tool_name}")
-        return self._tools[tool_name].handler(**tool_args)
+        try:
+            return provider.execute(tool_name, **tool_args)
+        except ToolProviderError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
