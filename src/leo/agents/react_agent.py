@@ -50,10 +50,11 @@ class ReActAgent(Agent):
                 "type": "object",
                 "properties": {
                     "answer": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": (
                             "The complete, user-facing final answer. "
-                            "For drafting tasks, include the full draft body here."
+                            "For drafting tasks, include the full draft body here. "
+                            "Use null for state-mutation tasks that do not require a textual answer."
                         ),
                     }
                 },
@@ -106,11 +107,13 @@ class ReActAgent(Agent):
             return None
         parsed_args = cls._parse_tool_args(tool_call.function.arguments)
         answer = parsed_args.get("answer")
+        if answer is None:
+            return None
         if not isinstance(answer, str):
             raise ValueError("final_answer.answer must be a string.")
         text = answer.strip()
         if not text:
-            raise ValueError("final_answer.answer must not be empty.")
+            return None
         return text
 
     @staticmethod
@@ -299,13 +302,13 @@ class ReActAgent(Agent):
                     {
                         "role": "tool",
                         "tool_call_id": tool_calls[0].id,
-                        "content": final_answer,
+                        "content": "" if final_answer is None else final_answer,
                     }
                 )
                 LOGGER.info(
                     "Turn %d: final answer tool received preview=%s",
                     turn_number,
-                    self._preview_text(final_answer),
+                    self._preview_text("" if final_answer is None else final_answer),
                 )
                 LOGGER.info("Returning final answer after %d turns.", turn_number)
                 return final_answer

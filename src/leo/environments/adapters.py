@@ -660,7 +660,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         if self._context is None:
             raise EnvironmentAdapterError("AppWorld task context is unavailable.")
         name = str(outputs.get("name") or "").strip()
-        content = str(outputs.get("content") or "")
+        raw_content = outputs.get("content")
+        content = None if raw_content is None else str(raw_content)
         if not name:
             raise EnvironmentAdapterError("Saved output requires a non-empty name.")
         record = {
@@ -675,9 +676,10 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         if self._world is not None and name == "answer":
             execute_method = _resolve_callable(self._world, "execute", "run", "run_code")
             if execute_method is not None:
+                answer_literal = "None" if content is None else repr(content)
                 completion_code = (
                     "apis.supervisor.complete_task("
-                    f"answer={json.dumps(content)}, status='success')"
+                    f"answer={answer_literal}, status='success')"
                 )
                 _call_with_supported_kwargs(
                     execute_method,
@@ -1266,6 +1268,64 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                     "print(total_likes)",
                 ]
             )
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": "\n".join(code_lines),
+            }
+
+        if (
+            app_name == "simple_note"
+            and "bucket list" in instruction
+            and "mark" in instruction
+            and "search_notes" in reference
+            and "show_note" in reference
+            and "update_note" in reference
+        ):
+            activity = str(public_data.get("bucket_list_activity") or "").strip()
+            done_or_not = str(public_data.get("done_or_not") or "").strip().lower()
+            if not activity or done_or_not not in {"done", "not done"}:
+                return None
+            source_marker = "[ ]" if done_or_not == "done" else "[x]"
+            target_marker = "[x]" if done_or_not == "done" else "[ ]"
+            recommended_apis.extend(
+                [
+                    {
+                        "app_name": app_name,
+                        "api_name": "search_notes",
+                        "why": "Find the Bucket List note by query without guessing its id.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_note",
+                        "why": "Load the full note content before editing.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "update_note",
+                        "why": "Write back the updated note content while preserving other fields.",
+                    },
+                ]
+            )
+            flow.extend(
+                [
+                    "Search notes for 'bucket list' and pick the matching note.",
+                    "Load the note content, replace only the matching checklist line, and update the note content.",
+                    "Return null because this task is satisfied by the note mutation itself.",
+                ]
+            )
+            code_lines = [
+                "from appworld.common.utils import find_one_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "simple_note_password = next(item['password'] for item in passwords if item['account_name'] == 'simple_note')",
+                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password=simple_note_password)['access_token']",
+                f"bucket_list_note = find_one_from_pages(apis.{app_name}.search_notes, access_token=access_token, query='bucket list')",
+                f"note = apis.{app_name}.show_note(note_id=bucket_list_note['note_id'], access_token=access_token)",
+                "note_content = note['content']",
+                f"updated_note_content = note_content.replace('{source_marker} {activity}', '{target_marker} {activity}')",
+                f"apis.{app_name}.update_note(note_id=bucket_list_note['note_id'], content=updated_note_content, access_token=access_token)",
+                "print(None)",
+            ]
             return {
                 "recommended_apis": recommended_apis,
                 "suggested_flow": flow,

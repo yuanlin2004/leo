@@ -891,6 +891,155 @@ def test_appworld_venmo_likes_strategy_hint() -> None:
     }
 
 
+def test_appworld_simple_note_bucket_list_strategy_hint() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-11",
+            "instruction": 'Mark "Learning to cook a signature dish from scratch" in my Bucket List Simple Note as done.',
+            "public_data": {
+                "required_apps": ["simple_note"],
+                "public_data": {
+                    "bucket_list_activity": "Learning to cook a signature dish from scratch",
+                    "done_or_not": "done",
+                },
+                "supervisor": {"email": "ron.harrison@gmail.com"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-11",
+            "instruction": 'Mark "Learning to cook a signature dish from scratch" in my Bucket List Simple Note as done.',
+            "public_data": {
+                "required_apps": ["simple_note"],
+                "public_data": {
+                    "bucket_list_activity": "Learning to cook a signature dish from scratch",
+                    "done_or_not": "done",
+                },
+                "supervisor": {"email": "ron.harrison@gmail.com"},
+            },
+        }
+    )
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "simple_note": {
+            "login": {
+                "app_name": "simple_note",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/simple_note/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "search_notes": {
+                "app_name": "simple_note",
+                "api_name": "search_notes",
+                "method": "GET",
+                "path": "/simple_note/notes",
+                "description": "Search your notes.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_note": {
+                "app_name": "simple_note",
+                "api_name": "show_note",
+                "method": "GET",
+                "path": "/simple_note/notes/{note_id}",
+                "description": "Show detailed information of a note.",
+                "parameters": [
+                    {"name": "note_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+            "update_note": {
+                "app_name": "simple_note",
+                "api_name": "update_note",
+                "method": "PATCH",
+                "path": "/simple_note/notes/{note_id}",
+                "description": "Update a note.",
+                "parameters": [
+                    {"name": "note_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    listed = adapter.list_app_apis("simple_note", max_results=5)
+
+    assert {item["api_name"] for item in listed["results"][:4]} == {
+        "search_notes",
+        "show_note",
+        "update_note",
+        "login",
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the simple_note account.",
+            },
+            {
+                "app_name": "simple_note",
+                "api_name": "login",
+                "why": "Obtain the access_token required by simple_note APIs.",
+            },
+            {
+                "app_name": "simple_note",
+                "api_name": "search_notes",
+                "why": "Find the Bucket List note by query without guessing its id.",
+            },
+            {
+                "app_name": "simple_note",
+                "api_name": "show_note",
+                "why": "Load the full note content before editing.",
+            },
+            {
+                "app_name": "simple_note",
+                "api_name": "update_note",
+                "why": "Write back the updated note content while preserving other fields.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the simple_note account.",
+            "Call simple_note.login(username=<supervisor email>, password=<simple_note password>) and keep the returned access_token.",
+            "Search notes for 'bucket list' and pick the matching note.",
+            "Load the note content, replace only the matching checklist line, and update the note content.",
+            "Return null because this task is satisfied by the note mutation itself.",
+        ],
+        "example_code": "\n".join(
+            [
+                "from appworld.common.utils import find_one_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "simple_note_password = next(item['password'] for item in passwords if item['account_name'] == 'simple_note')",
+                "access_token = apis.simple_note.login(username='ron.harrison@gmail.com', password=simple_note_password)['access_token']",
+                "bucket_list_note = find_one_from_pages(apis.simple_note.search_notes, access_token=access_token, query='bucket list')",
+                "note = apis.simple_note.show_note(note_id=bucket_list_note['note_id'], access_token=access_token)",
+                "note_content = note['content']",
+                "updated_note_content = note_content.replace('[ ] Learning to cook a signature dish from scratch', '[x] Learning to cook a signature dish from scratch')",
+                "apis.simple_note.update_note(note_id=bucket_list_note['note_id'], content=updated_note_content, access_token=access_token)",
+                "print(None)",
+            ]
+        ),
+    }
+    assert listed["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "simple_note"},
+    }
+
+
 def test_execute_appworld_code_auto_prints_final_expression() -> None:
     class FakeWorld:
         def __init__(self) -> None:

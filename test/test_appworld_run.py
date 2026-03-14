@@ -107,6 +107,14 @@ class _FakeAppWorld:
         return None
 
 
+class _FakeAppWorldNullAnswer(_FakeAppWorld):
+    def evaluate(self) -> dict[str, object]:
+        return {
+            "evaluated": True,
+            "passed": self.saved_answer is None,
+        }
+
+
 def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
     tmp_path: Path,
     monkeypatch,
@@ -281,6 +289,60 @@ def test_run_appworld_tasks_with_mcp_tools(
     assert trace_summary["event_types"]["tool_result"] >= 1
 
 
+def test_run_appworld_tasks_accepts_null_final_answer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorldNullAnswer,
+        load_task_ids=lambda dataset_name, root=None: ["task-null-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-null-1",),
+        experiment_name="direct-null-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=4,
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": None}),
+                            )
+                        ],
+                    }
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
+
+    assert summary.task_count == 1
+    result = summary.results[0]
+    assert result.success is True
+    assert result.final_answer is None
+    assert result.evaluation == {"evaluated": True, "passed": True, "task_id": "task-null-1"}
+    assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == ""
+
+
 def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "`apis`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
@@ -292,3 +354,4 @@ def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "recommended_next_tool" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT

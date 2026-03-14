@@ -43,6 +43,7 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nAvoid irrelevant exploration."
     "\nReturn only the answer the task asks for. Do not add caveats or off-task explanations unless the task explicitly asks for them."
     "\nFor AppWorld question-answer tasks, final_answer.answer should usually be only the bare answer value, not a sentence. Example: A Love That Never Was"
+    "\nFor AppWorld state-mutation tasks that do not ask for a textual answer, call final_answer with answer=null after the state change is complete."
     "\nBefore finishing, ensure the final answer is saved for evaluation."
 )
 
@@ -213,7 +214,7 @@ def run_appworld_tasks(
                 }
             )
             output_directory = saved.get("output_directory")
-            _write_text(artifact_dir / "final_answer.txt", final_answer)
+            _write_text(artifact_dir / "final_answer.txt", "" if final_answer is None else final_answer)
             _write_json(artifact_dir / "saved_output.json", saved)
             if evaluate:
                 evaluation_payload = registry.evaluate_environment_outputs()
