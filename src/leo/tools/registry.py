@@ -22,6 +22,14 @@ class RegisteredTool:
     provenance: str
 
 
+_FILE_EXTENSION_SKILL_MAP = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+}
+
+
 class ToolsRegistry:
     def __init__(
         self,
@@ -88,6 +96,79 @@ class ToolsRegistry:
             handler=lambda skill_name, resource_path: self.get_skill_resource(
                 skill_name,
                 resource_path,
+            ),
+            provenance="runtime:core",
+        )
+        self.register_tool(
+            name="get_skill_requirements",
+            description="List the declared requirements and dependencies for an activated skill.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The activated skill name or canonical id.",
+                    }
+                },
+                "required": ["skill_name"],
+                "additionalProperties": False,
+            },
+            handler=lambda skill_name: self.get_skill_requirements(skill_name),
+            provenance="runtime:core",
+        )
+        self.register_tool(
+            name="list_skill_commands",
+            description="List the runnable commands declared or discovered for an activated skill.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The activated skill name or canonical id.",
+                    }
+                },
+                "required": ["skill_name"],
+                "additionalProperties": False,
+            },
+            handler=lambda skill_name: self.list_skill_commands(skill_name),
+            provenance="runtime:core",
+        )
+        self.register_tool(
+            name="run_skill_command",
+            description=(
+                "Run a declared command for an activated skill. Direct commands run as "
+                "argv subprocesses; tmux is used for session-based workflows."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The activated skill name or canonical id.",
+                    },
+                    "command_name": {
+                        "type": "string",
+                        "description": "The skill command name from list_skill_commands.",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Command-line arguments passed to the skill command.",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Maximum runtime in milliseconds.",
+                        "default": 30000,
+                    },
+                },
+                "required": ["skill_name", "command_name"],
+                "additionalProperties": False,
+            },
+            handler=lambda skill_name, command_name, args=None, timeout_ms=30000: self.run_skill_command(
+                skill_name,
+                command_name,
+                args=args,
+                timeout_ms=timeout_ms,
             ),
             provenance="runtime:core",
         )
@@ -176,6 +257,41 @@ class ToolsRegistry:
         except SkillsCatalogError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
+    def get_skill_requirements(self, skill_name: str) -> list[dict[str, Any]]:
+        try:
+            return [
+                item.to_dict() for item in self._catalog.get_skill_requirements(skill_name)
+            ]
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def list_skill_commands(self, skill_name: str) -> list[dict[str, Any]]:
+        try:
+            return [
+                item.to_dict() for item in self._catalog.list_skill_commands(skill_name)
+            ]
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+
+    def run_skill_command(
+        self,
+        skill_name: str,
+        command_name: str,
+        *,
+        args: list[str] | None = None,
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        try:
+            result = self._catalog.run_skill_command(
+                skill_name,
+                command_name,
+                args=args,
+                timeout_ms=timeout_ms,
+            )
+        except SkillsCatalogError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+        return result.to_dict()
+
     def reset_session_state(self) -> None:
         self._remove_skill_tools()
         self._catalog.reset_session_state()
@@ -199,6 +315,46 @@ class ToolsRegistry:
     def get_activated_skill_ids(self) -> list[str]:
         return self._catalog.get_activated_skill_ids()
 
+    def activate_relevant_skills_for_input(self, user_input: str) -> list[dict[str, Any]]:
+        text = (user_input or "").strip()
+        if not text:
+            return []
+
+        available_by_name = {
+            item["name"].lower(): item["name"] for item in self.list_available_skills()
+        }
+        requested: list[str] = []
+        seen: set[str] = set()
+
+        normalized_text = text.lower()
+        for skill_name_lower, skill_name in available_by_name.items():
+            variants = {skill_name_lower, skill_name_lower.replace("-", " ")}
+            if any(
+                f"${variant}" in normalized_text or variant in normalized_text
+                for variant in variants
+            ):
+                if skill_name not in seen:
+                    seen.add(skill_name)
+                    requested.append(skill_name)
+
+        for token in text.split():
+            suffix = Path(token.strip("()[]{}<>,.;:'\"")).suffix.lower()
+            skill_name = _FILE_EXTENSION_SKILL_MAP.get(suffix)
+            if not skill_name:
+                continue
+            resolved_name = available_by_name.get(skill_name)
+            if resolved_name and resolved_name not in seen:
+                seen.add(resolved_name)
+                requested.append(resolved_name)
+
+        activations: list[dict[str, Any]] = []
+        for skill_name in requested:
+            try:
+                activations.append(self.activate_skill(skill_name))
+            except ToolsRegistryError:
+                continue
+        return activations
+
     def get_protected_skill_context(self) -> str:
         activated = self._catalog.get_activated_skills()
         if not activated:
@@ -217,11 +373,32 @@ class ToolsRegistry:
                     "\nBundled resources available via get_skill_resource: "
                     f"{preview}"
                 )
+            requirement_note = ""
+            if item.requirements:
+                preview = ", ".join(requirement.name for requirement in item.requirements[:6])
+                if len(item.requirements) > 6:
+                    preview += ", ..."
+                requirement_note = (
+                    "\nRequirements available via get_skill_requirements: "
+                    f"{preview}"
+                )
+            command_note = ""
+            if item.commands:
+                preview = ", ".join(command.name for command in item.commands[:6])
+                if len(item.commands) > 6:
+                    preview += ", ..."
+                command_note = (
+                    "\nRunnable commands available via list_skill_commands/run_skill_command: "
+                    f"{preview}"
+                )
             lines.extend(
                 [
                     "",
                     f"[{item.manifest.name}]",
-                    (item.instructions or "(no additional instructions)") + resource_note,
+                    (item.instructions or "(no additional instructions)")
+                    + resource_note
+                    + requirement_note
+                    + command_note,
                 ]
             )
         return "\n".join(lines).strip()

@@ -27,6 +27,8 @@ Rules:
 - Final answer must be clear and user-facing. For writing tasks, include the full deliverable in `final_answer.answer`.
 - If a skill may help, call list_available_skills first and activate_skill before using any tool or bundled resource from that skill.
 - If an activated skill mentions companion guides, scripts, or reference files, load them with get_skill_resource instead of guessing.
+- If a skill workflow depends on binaries, MCP servers, auth, or environment variables, inspect get_skill_requirements before proceeding.
+- If an activated skill exposes runnable commands, inspect them with list_skill_commands and execute them with run_skill_command.
 """
 
 
@@ -199,6 +201,7 @@ class ReActAgent(Agent):
         user_input = ""
         if conversation:
             user_input = str(conversation[-1].get("content") or "")
+        self.tools_registry.activate_relevant_skills_for_input(user_input)
         action_counts: dict[str, int] = {}
         LOGGER.info(
             "Run start: agent=%s max_iterations=%d user_input=%s",

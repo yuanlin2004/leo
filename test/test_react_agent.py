@@ -313,6 +313,99 @@ def test_react_agent_can_load_bundled_resource_from_activated_skill() -> None:
     assert result == "loaded"
 
 
+def test_react_agent_auto_activates_pdf_skill_from_user_path() -> None:
+    class RecordingLLM(FakeLLM):
+        def __init__(self, responses: list[dict[str, object]]):
+            super().__init__(responses)
+            self.calls: list[list[dict[str, object]]] = []
+
+        def complete(self, messages, tools=None):
+            self.calls.append(json.loads(json.dumps(messages)))
+            return super().complete(messages=messages, tools=tools)
+
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+    llm = RecordingLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final",
+                        "final_answer",
+                        json.dumps({"answer": "done"}),
+                    )
+                ],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run(
+        "find the title in /Users/yuan/Downloads/compiler_runtime_agents_whitepaper_expanded.pdf",
+        max_iterations=2,
+    )
+
+    assert result == "done"
+    assert registry.get_activated_skill_ids() == ["pdf"]
+    assert any(
+        message.get("role") == "system" and "[pdf]" in str(message.get("content"))
+        for message in llm.calls[0]
+    )
+
+
+def test_react_agent_can_list_and_run_skill_command() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
+
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "Need the CI skill.",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-1",
+                        "activate_skill",
+                        json.dumps({"skill_name": "gh-fix-ci"}),
+                    )
+                ],
+            },
+            {
+                "content": "Inspect commands first.",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-2",
+                        "list_skill_commands",
+                        json.dumps({"skill_name": "gh-fix-ci"}),
+                    )
+                ],
+            },
+            {
+                "content": "Run the help command.",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-3",
+                        "run_skill_command",
+                        json.dumps(
+                            {
+                                "skill_name": "gh-fix-ci",
+                                "command_name": "inspect_pr_checks",
+                                "args": ["--help"],
+                                "timeout_ms": 10000,
+                            }
+                        ),
+                    )
+                ],
+            },
+            {"content": "Final Answer: command ran"},
+        ]
+    )
+
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("inspect the ci helper", max_iterations=8)
+
+    assert result == "command ran"
+
+
 def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFixture) -> None:
     def lookup(query: str) -> str:
         return f"obs:{query}"

@@ -3,9 +3,10 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from leo.cli.banner import render_leo_banner
-from leo.cli.main import parse_args, run
+from leo.cli.main import create_agent, parse_args, run
 
 
 class FakeToolsRegistry:
@@ -128,6 +129,43 @@ def test_parse_args_loads_dotenv_defaults(tmp_path: Path, monkeypatch) -> None:
     args = parse_args(["ask", "hello"])
 
     assert args.model == "from-dotenv-model"
+
+
+def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class StubRegistry:
+        def __init__(self, skills_root=None, *, user_skills_root=None) -> None:
+            captured["skills_root"] = skills_root
+            captured["user_skills_root"] = user_skills_root
+
+        def get_all_tools(self) -> dict[str, str]:
+            return {}
+
+    class StubLLM:
+        def __init__(self, **kwargs) -> None:
+            captured["llm_kwargs"] = kwargs
+
+    class StubAgent:
+        def __init__(self, name, llm, tools_registry, extra_system_prompt=None) -> None:
+            captured["agent_name"] = name
+            captured["llm"] = llm
+            captured["tools_registry"] = tools_registry
+            captured["extra_system_prompt"] = extra_system_prompt
+
+    args = parse_args(["chat", "--skills-root", "/tmp/ext-skills", "--no-banner"])
+    fake_home = Path("/tmp/fake-home")
+
+    with (
+        patch("leo.cli.main.ToolsRegistry", StubRegistry),
+        patch("leo.cli.main.LeoLLMClient", StubLLM),
+        patch("leo.cli.main.ReActAgent", StubAgent),
+        patch("leo.cli.main.Path.home", return_value=fake_home),
+    ):
+        create_agent(args)
+
+    assert captured["skills_root"] == "/tmp/ext-skills"
+    assert captured["user_skills_root"] == fake_home / ".leo" / "skills"
 
 
 def test_run_ask_uses_agent_run() -> None:

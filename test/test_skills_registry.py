@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from leo.skills.runtime import probe_tmux_runtime
 from leo.tools.registry import ToolsRegistry, ToolsRegistryError
+
+
+def _tmux_usable() -> bool:
+    available, _error = probe_tmux_runtime()
+    return available
 
 
 def _write_skill(
@@ -52,6 +58,34 @@ def _write_invalid_skill(root: Path, *, folder_name: str = "invalid_skill") -> N
     )
 
 
+def _write_command_skill(root: Path, *, shell: bool = False) -> None:
+    skill_dir = root / "command_skill"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    if shell:
+        script_name = "run_demo.sh"
+        script_body = "#!/bin/sh\necho \"tmux-demo:$1\"\n"
+    else:
+        script_name = "run_demo.py"
+        script_body = (
+            "import sys\n"
+            "print(f\"direct-demo:{sys.argv[1] if len(sys.argv) > 1 else 'missing'}\")\n"
+        )
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: command_skill
+description: Execute a bundled script workflow.
+---
+Use this skill to run `{script_name}` from the scripts directory.
+""",
+        encoding="utf-8",
+    )
+    script_path = scripts_dir / script_name
+    script_path.write_text(script_body, encoding="utf-8")
+    if shell:
+        script_path.chmod(0o755)
+
+
 def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -> None:
     skills_root = tmp_path / ".agents" / "skills"
     _write_skill(skills_root)
@@ -64,6 +98,9 @@ def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -
     assert "list_available_skills" in all_tools
     assert "activate_skill" in all_tools
     assert "get_skill_resource" in all_tools
+    assert "get_skill_requirements" in all_tools
+    assert "list_skill_commands" in all_tools
+    assert "run_skill_command" in all_tools
     assert "echo_tool" not in all_tools
 
 
@@ -116,7 +153,7 @@ def test_registry_marks_invalid_skills_as_not_loadable(tmp_path: Path) -> None:
 
 def test_registry_prefers_project_skill_over_user_skill_on_collision(tmp_path: Path) -> None:
     project_root = tmp_path / "project" / ".agents" / "skills"
-    user_root = tmp_path / "user" / ".codex" / "skills"
+    user_root = tmp_path / "user" / ".leo" / "skills"
     _write_skill(
         user_root,
         name="shared_skill",
@@ -223,6 +260,145 @@ def test_registry_loads_skill_resource_from_activated_external_skill() -> None:
         registry.get_skill_resource("frontend-design", "missing.md")
 
 
+def test_registry_exposes_requirements_for_external_skills() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
+
+    registry.activate_skill("openai-docs")
+    requirements = registry.get_skill_requirements("openai-docs")
+
+    assert any(
+        item["kind"] == "mcp" and item["name"] == "openaiDeveloperDocs"
+        for item in requirements
+    )
+
+
+def test_registry_preserves_compatibility_metadata_for_gemini_skill() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/gemini-skills/skills")
+
+    summary = registry.get_skill_summary("vertex-ai-api-dev")
+    assert summary["channel"] == "default"
+    assert "Google Cloud credentials" in summary["compatibility"]
+
+    registry.activate_skill("vertex-ai-api-dev")
+    requirements = registry.get_skill_requirements("vertex-ai-api-dev")
+    assert any(
+        item["kind"] == "compatibility"
+        and "Google Cloud credentials" in item["value"]
+        for item in requirements
+    )
+
+
+def test_registry_prefers_openai_system_channel_for_duplicate_skill_names() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
+
+    summary = registry.get_skill_summary("openai-docs")
+    assert summary["channel"] == ".system"
+
+
+def test_registry_discovers_commands_from_skill_scripts(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_command_skill(skills_root)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+    activation = registry.activate_skill("command_skill")
+
+    assert activation["command_names"] == ["run_demo"]
+    commands = registry.list_skill_commands("command_skill")
+    assert commands == [
+        {
+            "name": "run_demo",
+            "command_path": "scripts/run_demo.py",
+            "execution_mode": "direct",
+            "executable": "python3",
+            "source": "script-reference",
+        }
+    ]
+
+
+def test_registry_runs_direct_skill_command(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_command_skill(skills_root)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+    registry.activate_skill("command_skill")
+
+    result = registry.run_skill_command(
+        "command_skill",
+        "run_demo",
+        args=["ok"],
+        timeout_ms=5000,
+    )
+
+    assert result["exit_code"] == 0
+    assert "direct-demo:ok" in result["stdout"]
+
+
+def test_registry_reports_missing_tmux_for_tmux_skill_command(tmp_path: Path) -> None:
+    skills_root = tmp_path / ".agents" / "skills"
+    _write_command_skill(skills_root, shell=True)
+
+    registry = ToolsRegistry(skills_root=skills_root)
+    registry.activate_skill("command_skill")
+
+    if _tmux_usable():
+        result = registry.run_skill_command(
+            "command_skill",
+            "run_demo",
+            args=["ok"],
+            timeout_ms=5000,
+        )
+        assert result["execution_mode"] == "tmux"
+        assert result["exit_code"] == 0
+        assert "tmux-demo:ok" in result["stdout"]
+        return
+
+    with pytest.raises(ToolsRegistryError):
+        registry.run_skill_command(
+            "command_skill",
+            "run_demo",
+            args=["ok"],
+            timeout_ms=5000,
+        )
+
+
+def test_registry_discovers_external_pdf_skill_commands() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+
+    registry.activate_skill("pdf")
+    commands = registry.list_skill_commands("pdf")
+    command_names = {item["name"] for item in commands}
+
+    assert "check_fillable_fields" in command_names
+    assert "extract_form_field_info" in command_names
+    assert "fill_fillable_fields" in command_names
+
+
+def test_registry_runs_external_python_skill_command_help() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
+
+    registry.activate_skill("gh-fix-ci")
+    result = registry.run_skill_command(
+        "gh-fix-ci",
+        "inspect_pr_checks",
+        args=["--help"],
+        timeout_ms=10000,
+    )
+
+    assert result["exit_code"] == 0
+    assert "Inspect failing GitHub PR checks" in result["stdout"]
+
+
+def test_registry_auto_activates_pdf_skill_from_file_extension() -> None:
+    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+
+    activations = registry.activate_relevant_skills_for_input(
+        "find the title in /Users/yuan/Downloads/paper.pdf"
+    )
+
+    assert [item["name"] for item in activations] == ["pdf"]
+    assert registry.get_activated_skill_ids() == ["pdf"]
+
+
 def test_registry_executes_real_project_skill_tools_after_activation() -> None:
     skills_root = Path.cwd() / ".agents" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
@@ -306,5 +482,7 @@ def test_registry_protected_context_mentions_available_skill_resources() -> None
     context = registry.get_protected_skill_context()
 
     assert "Bundled resources available via get_skill_resource" in context
+    assert "Requirements available via get_skill_requirements" in context
+    assert "Runnable commands available via list_skill_commands/run_skill_command" in context
     assert "forms.md" in context
     assert "reference.md" in context

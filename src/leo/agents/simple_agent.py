@@ -14,6 +14,8 @@ Always provide a final answer to the user after using tools, even if you had to 
 Be concise and clear in your responses.
 If a skill may help, call list_available_skills first, then activate_skill before using any tool or bundled resource from that skill.
 If an activated skill points to companion guides, scripts, or reference files, load them with get_skill_resource instead of guessing.
+If a skill depends on external binaries, MCP servers, auth, or env vars, inspect get_skill_requirements.
+If a skill exposes runnable commands, inspect them with list_skill_commands and execute them with run_skill_command.
 """
 
 class SimpleAgent(Agent):
@@ -84,6 +86,8 @@ class SimpleAgent(Agent):
         conversation: list[dict[str, Any]],
         max_iterations: int,
     ) -> str:
+        user_input = str(conversation[-1].get("content") or "") if conversation else ""
+        self.tools_registry.activate_relevant_skills_for_input(user_input)
         for _ in range(max_iterations):
             tools = self.tools_registry.get_tool_schemas()
             assistant_message = self.llm.complete(

@@ -118,7 +118,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
     registry = ToolsRegistry(
         skills_root=args.skills_root,
-        user_skills_root=Path.home() / ".codex" / "skills",
+        user_skills_root=Path.home() / ".leo" / "skills",
     )
     llm = LeoLLMClient(
         model=args.model,
