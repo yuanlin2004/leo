@@ -17,6 +17,11 @@ This file tracks AppWorld tasks that Leo currently passes in live evaluation run
 | `302c169_3` | `phone` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/302c169_3/result.json` |
 | `68ee2c9_1` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_1/result.json` |
 | `68ee2c9_2` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-regression-20260314c/68ee2c9_2/result.json` |
+| `cf6abd2_2` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/cf6abd2_2/result.json` |
+| `cf6abd2_3` | `simple_note` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/cf6abd2_3/result.json` |
+| `68ee2c9_3` | `file_system` | State mutation, null answer | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/68ee2c9_3/result.json` |
+| `27e1026_2` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/27e1026_2/result.json` |
+| `27e1026_3` | `spotify` | Question answering | Passing | `/tmp/leo-appworld-runs/codex-appworld-new5b-20260314/27e1026_3/result.json` |
 
 ## Live Evaluation Baseline
 
@@ -24,7 +29,8 @@ This file tracks AppWorld tasks that Leo currently passes in live evaluation run
 - Model: `nvidia/nemotron-3-super-120b-a12b:free`
 - Temperature: `0`
 - Run mode: `leo.cli.main evaluate`
-- Latest full passing sweep: `codex-appworld-regression-20260314c`
+- Latest passing batch without code changes: `codex-appworld-new5b-20260314`
+- Latest full passing sweep after code changes: `codex-appworld-regression-20260314c`
 
 ## Regression Rule
 
@@ -32,8 +38,9 @@ Whenever a new AppWorld task is enabled:
 
 1. Add or update the task-specific Leo strategy/tooling.
 2. Run the new task live until it passes.
-3. Rerun every task listed in `Passing Tasks`.
-4. Fix any regressions before committing.
-5. Update this file with the new passing task and latest artifact path.
+3. If code changed, rerun every task listed in `Passing Tasks` before committing.
+4. If no code changed and the new task passes live, skip the historical rerun.
+5. Fix any regressions before committing.
+6. Update this file with the new passing task and latest artifact path.
 
-Do not commit a new AppWorld task enablement unless the full passing set still passes live.
+Do not commit a new AppWorld task enablement after code changes unless the full passing set still passes live.
