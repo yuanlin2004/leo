@@ -573,6 +573,8 @@ class ToolsRegistry:
 
 
 def _tags_for_core_tool(tool_name: str) -> frozenset[str]:
+    if tool_name == "execute_python":
+        return frozenset({"execution"})
     if tool_name in {"read_file", "write_file", "edit_file"}:
         return frozenset({"file"})
     if tool_name == "run_shell":

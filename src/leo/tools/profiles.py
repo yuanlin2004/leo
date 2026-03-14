@@ -11,6 +11,7 @@ class CapabilityProfile:
     enable_file_tools: bool = True
     enable_shell_tools: bool = True
     enable_tmux_tools: bool = True
+    enable_execution_tools: bool = False
     enable_skill_meta_tools: bool = True
     enable_mcp_meta_tools: bool = True
 
@@ -22,6 +23,8 @@ class CapabilityProfile:
         if "shell" in tags and not self.enable_shell_tools:
             return False
         if "tmux" in tags and not self.enable_tmux_tools:
+            return False
+        if "execution" in tags and not self.enable_execution_tools:
             return False
         if "skills-meta" in tags and not self.enable_skill_meta_tools:
             return False
@@ -45,6 +48,7 @@ BUILTIN_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
         enable_file_tools=False,
         enable_shell_tools=False,
         enable_tmux_tools=False,
+        enable_execution_tools=True,
         enable_skill_meta_tools=False,
         enable_mcp_meta_tools=False,
     ),

@@ -52,6 +52,7 @@ def test_benchmark_profile_hides_file_shell_tmux_and_skill_meta_tools(tmp_path: 
     assert "read_file" not in tools
     assert "run_shell" not in tools
     assert "tmux_start_session" not in tools
+    assert "execute_python" in tools
     assert "list_available_skills" not in tools
     assert "list_mcp_servers" not in tools
     assert registry.execute("echo", query="x") == "echo:x"

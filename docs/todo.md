@@ -66,6 +66,34 @@ Verification:
 - Agent construction stays backward compatible for current callers.
 - `pytest` passed with `69 passed, 3 skipped` when this item was implemented.
 
+### C. Implement Milestone 3 Stateful Execution Context
+
+Status: completed on 2026-03-13.
+
+Goal: complete Milestone 3 from [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md) by adding reusable, session-scoped Python execution with persistent state and structured failures.
+
+Implemented:
+- Added `ExecutionContext` in [execution.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/execution.py).
+- Added `execute_python` as a core tool with persistent namespace semantics inside one Leo session.
+- Added bounded stdout/stderr capture and bounded traceback formatting for failures.
+- Reset execution state on session reset through the normal core runtime reset path.
+- Gated execution through capability profiles so the default `generic` profile stays lightweight.
+- Enabled execution in the `benchmark-environment` profile without changing the base agent contract.
+
+Candidate files:
+- [src/leo/tools/execution.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/execution.py)
+- [src/leo/tools/core.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/core.py)
+- [src/leo/tools/profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py)
+- [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [test/test_execution_context.py](/Users/yuan/Documents/GitHub/leo/test/test_execution_context.py)
+- [test/test_core_tools.py](/Users/yuan/Documents/GitHub/leo/test/test_core_tools.py)
+
+Verification:
+- Multiple execution calls in one run can reuse variables and imports.
+- Failures return structured error information instead of crashing the loop.
+- Execution state is isolated per session/run via registry reset behavior.
+- `pytest` passed with `73 passed, 3 skipped` when this item was implemented.
+
 ## Foundation
 
 ### 0. Add Core Coding-Agent Tools

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from leo.skills.runtime import probe_tmux_runtime
+from leo.tools.execution import ExecutionContext
 
 
 class CoreToolError(Exception):
@@ -23,6 +24,7 @@ class CoreToolRuntime:
             Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
         )
         self._tmux_sessions: set[str] = set()
+        self._execution_context = ExecutionContext()
 
     @property
     def workspace_root(self) -> Path:
@@ -37,6 +39,7 @@ class CoreToolRuntime:
                 check=False,
             )
             self._tmux_sessions.discard(session_name)
+        self._execution_context.reset()
 
     def read_file(
         self,
@@ -279,6 +282,19 @@ class CoreToolRuntime:
         self._tmux_sessions.discard(session_name)
         return {"session_name": session_name, "killed": True}
 
+    def execute_python(
+        self,
+        code: str,
+        *,
+        max_output_chars: int = ExecutionContext._DEFAULT_MAX_OUTPUT_CHARS,
+        max_traceback_chars: int = ExecutionContext._DEFAULT_MAX_TRACEBACK_CHARS,
+    ) -> dict[str, object]:
+        return self._execution_context.execute_python(
+            code,
+            max_output_chars=max_output_chars,
+            max_traceback_chars=max_traceback_chars,
+        )
+
     def _resolve_existing_path(self, raw_path: str) -> Path:
         path = self._resolve_path(raw_path)
         if not path.exists():
@@ -429,6 +445,27 @@ def build_core_tool_specs(
                 "additionalProperties": False,
             },
             runtime.run_shell,
+        ),
+        (
+            "execute_python",
+            "Execute Python code in a persistent per-session namespace and return structured stdout, stderr, and error information.",
+            {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "max_output_chars": {
+                        "type": "integer",
+                        "default": ExecutionContext._DEFAULT_MAX_OUTPUT_CHARS,
+                    },
+                    "max_traceback_chars": {
+                        "type": "integer",
+                        "default": ExecutionContext._DEFAULT_MAX_TRACEBACK_CHARS,
+                    },
+                },
+                "required": ["code"],
+                "additionalProperties": False,
+            },
+            runtime.execute_python,
         ),
         (
             "tmux_start_session",
