@@ -290,3 +290,5 @@ def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "task_strategy_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "example_code" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "recommended_next_tool" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT

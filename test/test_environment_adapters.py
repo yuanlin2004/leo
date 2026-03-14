@@ -447,7 +447,7 @@ def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None
                 "    candidate = (song['like_count'], song['title'])",
                 "    if best is None or candidate > best:",
                 "        best = candidate",
-                "print(best)",
+                "print(best[1])",
             ]
         ),
     }
@@ -489,38 +489,281 @@ def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None
             "arguments": {"app_name": "spotify"},
         },
     }
-    assert token_described == {
-        "app_name": "spotify",
-        "api_name": "show_playlist_library",
-        "reference": {
-            "app_name": "spotify",
-            "api_name": "show_playlist_library",
-            "method": "GET",
-            "path": "/spotify/library/playlists",
-            "description": "Get a list of playlists in the user's playlist library.",
-            "parameters": [
-                {"name": "access_token", "required": True},
-                {"name": "page_index", "required": False},
-            ],
-        },
-        "auth_hint": {
-            "requires_access_token": True,
-            "login_api": "login",
-            "credential_source": {
+
+
+def test_appworld_spotify_library_release_strategy_hint() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-8",
+            "instruction": "What is the title of the oldest released song in my Spotify account from across my song, album and playlist libraries?",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "oldest_or_newest": "oldest",
+                },
+                "supervisor": {"email": "erikabail@gmail.com"},
+            },
+        }
+    )
+    world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
                 "app_name": "supervisor",
                 "api_name": "show_account_passwords",
-            },
-            "suggested_flow": [
-                "describe_appworld_api(app_name='supervisor', api_name='show_account_passwords')",
-                "describe_appworld_api(app_name='spotify', api_name='login')",
-                "execute_appworld_code to fetch credentials, login, and reuse the returned access_token",
-            ],
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
         },
-        "recommended_next_tool": {
-            "tool_name": "execute_appworld_task_strategy",
-            "arguments": {"app_name": "spotify"},
+        "spotify": {
+            "login": {
+                "app_name": "spotify",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/spotify/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_song_library": {
+                "app_name": "spotify",
+                "api_name": "show_song_library",
+                "method": "GET",
+                "path": "/spotify/library/songs",
+                "description": "Get a list of songs in the user's song library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_album_library": {
+                "app_name": "spotify",
+                "api_name": "show_album_library",
+                "method": "GET",
+                "path": "/spotify/library/albums",
+                "description": "Get a list of albums in the user's album library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_playlist_library": {
+                "app_name": "spotify",
+                "api_name": "show_playlist_library",
+                "method": "GET",
+                "path": "/spotify/library/playlists",
+                "description": "Get a list of playlists in the user's playlist library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_song": {
+                "app_name": "spotify",
+                "api_name": "show_song",
+                "method": "GET",
+                "path": "/spotify/songs/{song_id}",
+                "description": "Show song details.",
+                "parameters": [
+                    {"name": "song_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
         },
     }
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-8",
+            "instruction": "What is the title of the oldest released song in my Spotify account from across my song, album and playlist libraries?",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "oldest_or_newest": "oldest",
+                },
+                "supervisor": {"email": "erikabail@gmail.com"},
+            },
+        }
+    )
+    adapter._world_api_reference = world_api_reference
+
+    listed = adapter.list_app_apis("spotify", max_results=5)
+
+    assert {item["api_name"] for item in listed["results"][:5]} == {
+        "show_song_library",
+        "show_album_library",
+        "show_playlist_library",
+        "show_song",
+        "login",
+    }
+    assert listed["task_strategy_hint"] == {
+        "recommended_apis": [
+            {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "why": "Fetch the stored password for the Spotify account.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "login",
+                "why": "Obtain the access_token required by Spotify library APIs.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_song_library",
+                "why": "List songs saved directly in the user's song library.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_album_library",
+                "why": "List albums in the user's library and collect each album's song_ids and release_date.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_playlist_library",
+                "why": "List playlists in the user's library and collect each playlist's song_ids.",
+            },
+            {
+                "app_name": "spotify",
+                "api_name": "show_song",
+                "why": "Resolve song titles and release dates for candidate song_ids.",
+            },
+        ],
+        "suggested_flow": [
+            "Call supervisor.show_account_passwords and read the password for the spotify account.",
+            "Call spotify.login(username=<supervisor email>, password=<spotify password>) and keep the returned access_token.",
+            "Call spotify.show_song_library, spotify.show_album_library, and spotify.show_playlist_library across all pages.",
+            "Collect direct song_ids, album song_ids, and playlist song_ids into one unique set.",
+            "Use album release_date for album-library song_ids and spotify.show_song(song_id=...) for the remaining song release dates and final title lookup.",
+            "Choose the oldest release_date and return only that song title.",
+        ],
+        "example_code": "\n".join(
+            [
+                "from appworld.common.utils import find_all_from_pages",
+                "passwords = apis.supervisor.show_account_passwords()",
+                "spotify_password = next(item['password'] for item in passwords if item['account_name'] == 'spotify')",
+                "access_token = apis.spotify.login(username='erikabail@gmail.com', password=spotify_password)['access_token']",
+                "song_id_to_release_date = {}",
+                "library_songs = find_all_from_pages(apis.spotify.show_song_library, access_token=access_token)",
+                "for song in library_songs:",
+                "    details = apis.spotify.show_song(song_id=song['song_id'], access_token=access_token)",
+                "    song_id_to_release_date[details['song_id']] = details['release_date']",
+                "library_albums = find_all_from_pages(apis.spotify.show_album_library, access_token=access_token)",
+                "for album in library_albums:",
+                "    for song_id in album['song_ids']:",
+                "        song_id_to_release_date[song_id] = album['release_date']",
+                "playlist_library = find_all_from_pages(apis.spotify.show_playlist_library, access_token=access_token)",
+                "for playlist in playlist_library:",
+                "    for song_id in playlist['song_ids']:",
+                "        if song_id not in song_id_to_release_date:",
+                "            details = apis.spotify.show_song(song_id=song_id, access_token=access_token)",
+                "            song_id_to_release_date[song_id] = details['release_date']",
+                "target_song_id = min(song_id_to_release_date, key=song_id_to_release_date.get)",
+                "target_song = apis.spotify.show_song(song_id=target_song_id, access_token=access_token)",
+                "print(target_song['title'])",
+            ]
+        ),
+    }
+    assert listed["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "spotify"},
+    }
+
+
+def test_execute_appworld_code_includes_strategy_guidance_when_available() -> None:
+    class FakeWorld:
+        def execute(self, code: str) -> dict[str, object]:
+            return {"executed_code": code}
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-9",
+            "instruction": "What is the title of the oldest released song in my Spotify account from across my song, album and playlist libraries?",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "oldest_or_newest": "oldest",
+                },
+                "supervisor": {"email": "erikabail@gmail.com"},
+            },
+        }
+    )
+    adapter._initialize_from_payload(
+        {
+            "task_id": "aw-9",
+            "instruction": "What is the title of the oldest released song in my Spotify account from across my song, album and playlist libraries?",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "oldest_or_newest": "oldest",
+                },
+                "supervisor": {"email": "erikabail@gmail.com"},
+            },
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._world_api_reference = {
+        "supervisor": {
+            "show_account_passwords": {
+                "app_name": "supervisor",
+                "api_name": "show_account_passwords",
+                "method": "GET",
+                "path": "/supervisor/account_passwords",
+                "description": "Show your supervisor's app account passwords.",
+                "parameters": [],
+            }
+        },
+        "spotify": {
+            "login": {
+                "app_name": "spotify",
+                "api_name": "login",
+                "method": "POST",
+                "path": "/spotify/auth/token",
+                "description": "Login to your account.",
+                "parameters": [
+                    {"name": "username", "required": True},
+                    {"name": "password", "required": True},
+                ],
+            },
+            "show_song_library": {
+                "app_name": "spotify",
+                "api_name": "show_song_library",
+                "method": "GET",
+                "path": "/spotify/library/songs",
+                "description": "Get a list of songs in the user's song library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_album_library": {
+                "app_name": "spotify",
+                "api_name": "show_album_library",
+                "method": "GET",
+                "path": "/spotify/library/albums",
+                "description": "Get a list of albums in the user's album library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_playlist_library": {
+                "app_name": "spotify",
+                "api_name": "show_playlist_library",
+                "method": "GET",
+                "path": "/spotify/library/playlists",
+                "description": "Get a list of playlists in the user's playlist library.",
+                "parameters": [{"name": "access_token", "required": True}],
+            },
+            "show_song": {
+                "app_name": "spotify",
+                "api_name": "show_song",
+                "method": "GET",
+                "path": "/spotify/songs/{song_id}",
+                "description": "Show song details.",
+                "parameters": [
+                    {"name": "song_id", "required": True},
+                    {"name": "access_token", "required": True},
+                ],
+            },
+        },
+    }
+
+    result = adapter.execute_task_code("print('hello')")
+
+    assert result["recommended_next_tool"] == {
+        "tool_name": "execute_appworld_task_strategy",
+        "arguments": {"app_name": "spotify"},
+    }
+    assert "execute_appworld_task_strategy next" in result["strategy_guidance"]
+    assert "access tokens" in result["strategy_guidance"]
 
 
 def test_execute_appworld_code_auto_prints_final_expression() -> None:

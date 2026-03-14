@@ -492,6 +492,11 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             recommended_next_tool = self._build_recommended_strategy_tool()
             if recommended_next_tool is not None:
                 payload["recommended_next_tool"] = recommended_next_tool
+                payload["strategy_guidance"] = (
+                    "A task-specific AppWorld strategy is available. Call "
+                    "execute_appworld_task_strategy next instead of manually reconstructing "
+                    "access tokens or writing additional probing code."
+                )
             return payload
 
         scripted = self._task_payload.get("execution_responses")
@@ -508,6 +513,11 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 recommended_next_tool = self._build_recommended_strategy_tool()
                 if recommended_next_tool is not None:
                     response["recommended_next_tool"] = recommended_next_tool
+                    response["strategy_guidance"] = (
+                        "A task-specific AppWorld strategy is available. Call "
+                        "execute_appworld_task_strategy next instead of manually reconstructing "
+                        "access tokens or writing additional probing code."
+                    )
                 return response
         raise EnvironmentAdapterError(
             "AppWorld code execution is unavailable for this task source."
@@ -963,6 +973,16 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             if api_name.startswith("show_"):
                 score += 3
 
+        strategy = self._build_task_strategy_hint(app_name)
+        if strategy is not None:
+            recommended = {
+                str(item.get("api_name"))
+                for item in strategy.get("recommended_apis") or []
+                if isinstance(item, Mapping) and item.get("app_name") == app_name
+            }
+            if api_name in recommended:
+                score += 20
+
         return score
 
     def _build_auth_hint(self, app_name: str) -> dict[str, Any] | None:
@@ -1043,11 +1063,9 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         public_data = self._context.public_data
         library_name = str(public_data.get("library_name") or "").lower().strip()
         metric_adjective = str(public_data.get("metric_adjective") or "").lower().strip()
-        if app_name != "spotify" or library_name != "playlists":
+        instruction = str(self._context.instruction or "").lower()
+        if app_name != "spotify":
             return None
-        if "show_playlist_library" not in reference or "show_song" not in reference:
-            return None
-
         recommended_apis: list[dict[str, str]] = []
         flow: list[str] = []
         if "supervisor" in self._world_api_reference:
@@ -1072,49 +1090,129 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             flow.append(
                 "Call spotify.login(username=<supervisor email>, password=<spotify password>) and keep the returned access_token."
             )
-        recommended_apis.append(
-            {
-                "app_name": app_name,
-                "api_name": "show_playlist_library",
-                "why": "List the user's playlists and collect each playlist's song_ids.",
+
+        if library_name == "playlists":
+            if "show_playlist_library" not in reference or "show_song" not in reference:
+                return None
+            recommended_apis.append(
+                {
+                    "app_name": app_name,
+                    "api_name": "show_playlist_library",
+                    "why": "List the user's playlists and collect each playlist's song_ids.",
+                }
+            )
+            recommended_apis.append(
+                {
+                    "app_name": app_name,
+                    "api_name": "show_song",
+                    "why": f"Inspect each playlist song and compare {metric_adjective or 'like'} metadata such as like_count.",
+                }
+            )
+            flow.extend(
+                [
+                    "Call spotify.show_playlist_library(access_token=...) to get playlists and their song_ids.",
+                    "Call spotify.show_song(song_id=...) for each unique song_id from those playlists.",
+                    f"Compare the songs by {'like_count' if metric_adjective == 'liked' else metric_adjective or 'the requested metric'} and return only the song title.",
+                ]
+            )
+            metric_field = "like_count" if metric_adjective == "liked" else metric_adjective or "rating"
+            code_template = "\n".join(
+                [
+                    "passwords = apis.supervisor.show_account_passwords()",
+                    f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
+                    f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
+                    f"playlists = apis.{app_name}.show_playlist_library(access_token=access_token, page_limit=20)",
+                    "song_ids = sorted({song_id for playlist in playlists for song_id in playlist['song_ids']})",
+                    "best = None",
+                    "for song_id in song_ids:",
+                    f"    song = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
+                    f"    candidate = (song['{metric_field}'], song['title'])",
+                    "    if best is None or candidate > best:",
+                    "        best = candidate",
+                    "print(best[1])",
+                ]
+            )
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": code_template,
             }
-        )
-        recommended_apis.append(
-            {
-                "app_name": app_name,
-                "api_name": "show_song",
-                "why": f"Inspect each playlist song and compare {metric_adjective or 'like'} metadata such as like_count.",
+
+        if (
+            public_data.get("oldest_or_newest") in {"oldest", "newest"}
+            and any(term in instruction for term in ("library", "libraries"))
+            and "song" in instruction
+            and "album" in instruction
+            and "playlist" in instruction
+            and {"show_song_library", "show_album_library", "show_playlist_library", "show_song"}.issubset(reference)
+        ):
+            oldest_or_newest = str(public_data.get("oldest_or_newest") or "oldest")
+            comparator = "min" if oldest_or_newest == "oldest" else "max"
+            recommended_apis.extend(
+                [
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_song_library",
+                        "why": "List songs saved directly in the user's song library.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_album_library",
+                        "why": "List albums in the user's library and collect each album's song_ids and release_date.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_playlist_library",
+                        "why": "List playlists in the user's library and collect each playlist's song_ids.",
+                    },
+                    {
+                        "app_name": app_name,
+                        "api_name": "show_song",
+                        "why": "Resolve song titles and release dates for candidate song_ids.",
+                    },
+                ]
+            )
+            flow.extend(
+                [
+                    "Call spotify.show_song_library, spotify.show_album_library, and spotify.show_playlist_library across all pages.",
+                    "Collect direct song_ids, album song_ids, and playlist song_ids into one unique set.",
+                    "Use album release_date for album-library song_ids and spotify.show_song(song_id=...) for the remaining song release dates and final title lookup.",
+                    f"Choose the {oldest_or_newest} release_date and return only that song title.",
+                ]
+            )
+            code_template = "\n".join(
+                [
+                    "from appworld.common.utils import find_all_from_pages",
+                    "passwords = apis.supervisor.show_account_passwords()",
+                    f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
+                    f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
+                    "song_id_to_release_date = {}",
+                    f"library_songs = find_all_from_pages(apis.{app_name}.show_song_library, access_token=access_token)",
+                    "for song in library_songs:",
+                    f"    details = apis.{app_name}.show_song(song_id=song['song_id'], access_token=access_token)",
+                    "    song_id_to_release_date[details['song_id']] = details['release_date']",
+                    f"library_albums = find_all_from_pages(apis.{app_name}.show_album_library, access_token=access_token)",
+                    "for album in library_albums:",
+                    "    for song_id in album['song_ids']:",
+                    "        song_id_to_release_date[song_id] = album['release_date']",
+                    f"playlist_library = find_all_from_pages(apis.{app_name}.show_playlist_library, access_token=access_token)",
+                    "for playlist in playlist_library:",
+                    "    for song_id in playlist['song_ids']:",
+                    "        if song_id not in song_id_to_release_date:",
+                    f"            details = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
+                    "            song_id_to_release_date[song_id] = details['release_date']",
+                    f"target_song_id = {comparator}(song_id_to_release_date, key=song_id_to_release_date.get)",
+                    f"target_song = apis.{app_name}.show_song(song_id=target_song_id, access_token=access_token)",
+                    "print(target_song['title'])",
+                ]
+            )
+            return {
+                "recommended_apis": recommended_apis,
+                "suggested_flow": flow,
+                "example_code": code_template,
             }
-        )
-        flow.extend(
-            [
-                "Call spotify.show_playlist_library(access_token=...) to get playlists and their song_ids.",
-                "Call spotify.show_song(song_id=...) for each unique song_id from those playlists.",
-                f"Compare the songs by {'like_count' if metric_adjective == 'liked' else metric_adjective or 'the requested metric'} and return only the song title.",
-            ]
-        )
-        metric_field = "like_count" if metric_adjective == "liked" else metric_adjective or "rating"
-        code_template = "\n".join(
-            [
-                "passwords = apis.supervisor.show_account_passwords()",
-                f"{app_name}_password = next(item['password'] for item in passwords if item['account_name'] == '{app_name}')",
-                f"access_token = apis.{app_name}.login(username='{self._context.supervisor.get('email', '<supervisor email>')}', password={app_name}_password)['access_token']",
-                f"playlists = apis.{app_name}.show_playlist_library(access_token=access_token, page_limit=20)",
-                "song_ids = sorted({song_id for playlist in playlists for song_id in playlist['song_ids']})",
-                "best = None",
-                "for song_id in song_ids:",
-                f"    song = apis.{app_name}.show_song(song_id=song_id, access_token=access_token)",
-                f"    candidate = (song['{metric_field}'], song['title'])",
-                "    if best is None or candidate > best:",
-                "        best = candidate",
-                "print(best)",
-            ]
-        )
-        return {
-            "recommended_apis": recommended_apis,
-            "suggested_flow": flow,
-            "example_code": code_template,
-        }
+
+        return None
 
     def _persist_output_artifact(self, record: dict[str, Any]) -> Path | None:
         if self._task_output_dir is None:

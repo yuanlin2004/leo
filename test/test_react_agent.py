@@ -497,3 +497,30 @@ def test_react_agent_logs_structured_final_answer_tool(caplog: pytest.LogCapture
         in message
         for message in messages
     )
+
+
+def test_react_agent_retries_after_empty_non_tool_response() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-final",
+                        "final_answer",
+                        json.dumps({"answer": "done"}),
+                    )
+                ],
+            },
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=3)
+
+    assert result == "done"

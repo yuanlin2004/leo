@@ -324,6 +324,17 @@ class ReActAgent(Agent):
                         "Final answer preview: %s", self._preview_text(final_answer)
                     )
                     return final_answer
+                if not assistant_content.strip():
+                    reminder = (
+                        "Your previous response was empty. Continue the task by either "
+                        "calling an appropriate tool or using the final_answer tool."
+                    )
+                    conversation.append({"role": "user", "content": reminder})
+                    LOGGER.warning(
+                        "Turn %d: empty assistant response without tool calls; requesting a retry.",
+                        turn_number,
+                    )
+                    continue
                 LOGGER.info(
                     "Turn %d: returning assistant content preview=%s",
                     turn_number,
