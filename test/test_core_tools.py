@@ -30,6 +30,36 @@ def test_registry_exposes_core_tools() -> None:
         assert registry.get_tool_provenance(tool_name) == "runtime:core"
 
 
+def test_benchmark_profile_hides_file_shell_tmux_and_skill_meta_tools(tmp_path: Path) -> None:
+    registry = ToolsRegistry(
+        workspace_root=tmp_path,
+        capability_profile="benchmark-environment",
+    )
+    registry.register_tool(
+        name="echo",
+        description="Echo back input.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=lambda query: f"echo:{query}",
+    )
+
+    tools = registry.get_all_tools()
+
+    assert "echo" in tools
+    assert "read_file" not in tools
+    assert "run_shell" not in tools
+    assert "tmux_start_session" not in tools
+    assert "list_available_skills" not in tools
+    assert "list_mcp_servers" not in tools
+    assert registry.execute("echo", query="x") == "echo:x"
+
+    with pytest.raises(Exception, match="Unknown tool: read_file"):
+        registry.execute("read_file", path="notes.txt")
+
+
 def test_read_file_supports_line_ranges(tmp_path: Path) -> None:
     file_path = tmp_path / "notes.txt"
     file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")

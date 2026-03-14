@@ -1,4 +1,5 @@
 from .mcp import MCPConfigError, MCPError, MCPServerConfig, MCPToolCallError
+from .profiles import CapabilityProfile, resolve_capability_profile
 from .providers import (
     LocalToolProvider,
     MCPToolProvider,
@@ -9,12 +10,14 @@ from .providers import (
 from .registry import ToolsRegistry, ToolsRegistryError
 
 __all__ = [
+    "CapabilityProfile",
     "LocalToolProvider",
     "MCPConfigError",
     "MCPError",
     "MCPServerConfig",
     "MCPToolProvider",
     "MCPToolCallError",
+    "resolve_capability_profile",
     "SkillToolProvider",
     "ToolProvider",
     "ToolProviderError",

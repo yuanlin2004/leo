@@ -14,6 +14,7 @@ from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
 from leo.core.logging_utils import resolve_log_level
 from leo.core.env import load_project_env
+from leo.tools.profiles import BUILTIN_CAPABILITY_PROFILES, resolve_capability_profile
 from leo.tools.registry import ToolsRegistry
 
 VALID_LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -38,6 +39,7 @@ CHAT_HELP_TEXT = "\n".join(
 
 
 def _add_shared_options(parser: argparse.ArgumentParser) -> None:
+    profile_choices = tuple(sorted(BUILTIN_CAPABILITY_PROFILES))
     parser.add_argument(
         "--agent",
         choices=["react", "simple"],
@@ -63,6 +65,12 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         "--mcp-config",
         default=os.getenv("LEO_MCP_CONFIG"),
         help="Path to a JSON file containing MCP server configurations.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=profile_choices,
+        default=os.getenv("LEO_PROFILE", "generic"),
+        help="Capability profile controlling which tool groups and providers are exposed.",
     )
     parser.add_argument(
         "--max-iterations",
@@ -121,10 +129,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
+    profile = resolve_capability_profile(args.profile)
     registry = ToolsRegistry(
         skills_root=args.skills_root,
         user_skills_root=Path.home() / ".leo" / "skills",
         mcp_config_path=args.mcp_config,
+        capability_profile=profile,
     )
     llm = LeoLLMClient(
         model=args.model,
@@ -132,8 +142,18 @@ def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
         temperature=args.temperature,
     )
     if args.agent == "simple":
-        return SimpleAgent(name="leo-simple", llm=llm, tools_registry=registry)
-    return ReActAgent(name="leo-react", llm=llm, tools_registry=registry)
+        return SimpleAgent(
+            name="leo-simple",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=profile.extra_system_prompt,
+        )
+    return ReActAgent(
+        name="leo-react",
+        llm=llm,
+        tools_registry=registry,
+        extra_system_prompt=profile.extra_system_prompt,
+    )
 
 
 def run_ask(
@@ -198,6 +218,7 @@ def _format_config(args: argparse.Namespace) -> str:
             f"- agent: {args.agent}",
             f"- provider: {args.provider}",
             f"- model: {args.model}",
+            f"- profile: {args.profile}",
             f"- temperature: {args.temperature}",
             f"- max_iterations: {args.max_iterations}",
             f"- skills_root: {args.skills_root}",

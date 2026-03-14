@@ -104,6 +104,7 @@ def test_parse_args_for_ask_command() -> None:
     assert args.command == "ask"
     assert args.prompt == ["hello", "world"]
     assert args.agent == "react"
+    assert args.profile == "generic"
     assert args.max_iterations == 10
 
 
@@ -142,10 +143,12 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
             *,
             user_skills_root=None,
             mcp_config_path=None,
+            capability_profile=None,
         ) -> None:
             captured["skills_root"] = skills_root
             captured["user_skills_root"] = user_skills_root
             captured["mcp_config_path"] = mcp_config_path
+            captured["capability_profile"] = capability_profile
 
         def get_all_tools(self) -> dict[str, str]:
             return {}
@@ -175,6 +178,45 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
     assert captured["skills_root"] == "/tmp/ext-skills"
     assert captured["user_skills_root"] == fake_home / ".leo" / "skills"
     assert captured["mcp_config_path"] is None
+    assert captured["capability_profile"].name == "generic"
+
+
+def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class StubRegistry:
+        def __init__(
+            self,
+            skills_root=None,
+            *,
+            user_skills_root=None,
+            mcp_config_path=None,
+            capability_profile=None,
+        ) -> None:
+            captured["capability_profile"] = capability_profile
+
+        def get_all_tools(self) -> dict[str, str]:
+            return {}
+
+    class StubLLM:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+    class StubAgent:
+        def __init__(self, name, llm, tools_registry, extra_system_prompt=None) -> None:
+            captured["extra_system_prompt"] = extra_system_prompt
+
+    args = parse_args(["chat", "--profile", "benchmark-environment", "--no-banner"])
+
+    with (
+        patch("leo.cli.main.ToolsRegistry", StubRegistry),
+        patch("leo.cli.main.LeoLLMClient", StubLLM),
+        patch("leo.cli.main.ReActAgent", StubAgent),
+    ):
+        create_agent(args)
+
+    assert captured["capability_profile"].name == "benchmark-environment"
+    assert "restricted environment" in captured["extra_system_prompt"]
 
 
 def test_run_ask_uses_agent_run() -> None:

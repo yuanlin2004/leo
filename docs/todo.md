@@ -38,6 +38,34 @@ Verification:
 - Existing chat, ask, skill, and MCP tests still pass with only minimal fixture updates.
 - `pytest` passed with `67 passed, 3 skipped` when this item was implemented.
 
+### B. Implement Milestone 2 Capability Profiles
+
+Status: completed on 2026-03-13.
+
+Goal: complete Milestone 2 from [leo-generic-first-appworld-plan-milestones.md](/Users/yuan/Documents/GitHub/leo/docs/leo-generic-first-appworld-plan-milestones.md) so Leo can expose different tool sets and prompt supplements by profile without changing the base agent contract.
+
+Implemented:
+- Added `CapabilityProfile` and builtin profiles in [profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py).
+- Added profile resolution and profile-aware registry construction in [main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py).
+- Added tool tagging and deterministic profile-based visibility filtering in [registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py).
+- Kept the default `generic` profile behavior aligned with current Leo behavior.
+- Added a `benchmark-environment` profile that hides file, shell, tmux, and skill/MCP meta tools while preserving the base agent contract.
+- Wired optional profile prompt supplements through normal agent creation rather than creating a new benchmark-only agent.
+
+Candidate files:
+- [src/leo/tools/profiles.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/profiles.py)
+- [src/leo/tools/registry.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/registry.py)
+- [src/leo/tools/providers.py](/Users/yuan/Documents/GitHub/leo/src/leo/tools/providers.py)
+- [src/leo/cli/main.py](/Users/yuan/Documents/GitHub/leo/src/leo/cli/main.py)
+- [test/test_cli.py](/Users/yuan/Documents/GitHub/leo/test/test_cli.py)
+- [test/test_core_tools.py](/Users/yuan/Documents/GitHub/leo/test/test_core_tools.py)
+
+Verification:
+- Default `leo ask` and `leo chat` continue using the generic profile.
+- Profiles can hide or expose tool groups deterministically.
+- Agent construction stays backward compatible for current callers.
+- `pytest` passed with `69 passed, 3 skipped` when this item was implemented.
+
 ## Foundation
 
 ### 0. Add Core Coding-Agent Tools

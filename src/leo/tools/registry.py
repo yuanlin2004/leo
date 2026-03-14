@@ -10,6 +10,7 @@ from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
 from leo.tools.mcp import MCPServerConfig
+from leo.tools.profiles import CapabilityProfile, resolve_capability_profile
 from leo.tools.providers import (
     LocalToolProvider,
     MCPToolProvider,
@@ -39,7 +40,9 @@ class ToolsRegistry:
         workspace_root: str | Path | None = None,
         mcp_servers: list[MCPServerConfig] | None = None,
         mcp_config_path: str | Path | None = None,
+        capability_profile: CapabilityProfile | str | None = None,
     ) -> None:
+        self._capability_profile = resolve_capability_profile(capability_profile)
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
         self._local_provider = LocalToolProvider()
         self._mcp_provider = MCPToolProvider(
@@ -68,6 +71,7 @@ class ToolsRegistry:
                 parameters=parameters,
                 handler=handler,
                 provenance="runtime:core",
+                tags=_tags_for_core_tool(name),
             )
 
     def _register_meta_tools(self) -> None:
@@ -77,6 +81,7 @@ class ToolsRegistry:
             parameters={"type": "object", "properties": {}},
             handler=lambda: self.list_mcp_servers(),
             provenance="runtime:core",
+            tags=frozenset({"meta", "mcp-meta"}),
         )
         self.register_tool(
             name="list_available_skills",
@@ -84,6 +89,7 @@ class ToolsRegistry:
             parameters={"type": "object", "properties": {}},
             handler=lambda: self.list_available_skills(),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="activate_skill",
@@ -104,6 +110,7 @@ class ToolsRegistry:
             },
             handler=lambda skill_name: self.activate_skill(skill_name),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="get_skill_resource",
@@ -131,6 +138,7 @@ class ToolsRegistry:
                 resource_path,
             ),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="get_skill_requirements",
@@ -148,6 +156,7 @@ class ToolsRegistry:
             },
             handler=lambda skill_name: self.get_skill_requirements(skill_name),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="check_skill_readiness",
@@ -165,6 +174,7 @@ class ToolsRegistry:
             },
             handler=lambda skill_name: self.check_skill_readiness(skill_name),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="list_skill_commands",
@@ -182,6 +192,7 @@ class ToolsRegistry:
             },
             handler=lambda skill_name: self.list_skill_commands(skill_name),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
         self.register_tool(
             name="run_skill_command",
@@ -221,33 +232,51 @@ class ToolsRegistry:
                 timeout_ms=timeout_ms,
             ),
             provenance="runtime:core",
+            tags=frozenset({"meta", "skills-meta"}),
         )
 
-    def _registered_tools(self) -> dict[str, Any]:
+    def _visible_registered_tools(self) -> dict[str, Any]:
         aggregated: dict[str, Any] = {}
-        for provider in self._providers:
+        for provider_name, provider in self._provider_entries():
             for name, registered in provider.get_registered_tools().items():
+                if not self._capability_profile.allows(provider_name, registered.tags):
+                    continue
                 if name in aggregated:
                     raise ToolsRegistryError(f"Duplicate tool name: {name}")
                 aggregated[name] = registered
         return aggregated
 
     def _tool_name_exists(self, tool_name: str) -> bool:
-        return any(provider.has_tool(tool_name) for provider in self._providers)
+        return any(provider.has_tool(tool_name) for _name, provider in self._provider_entries())
 
     def _current_tool_names(self, *, exclude_skill_tools: bool = False) -> set[str]:
         names: set[str] = set()
-        for provider in self._providers:
+        for provider_name, provider in self._provider_entries():
             if exclude_skill_tools and provider is self._skill_provider:
                 continue
-            names.update(provider.get_registered_tools())
+            for name, registered in provider.get_registered_tools().items():
+                if self._capability_profile.allows(provider_name, registered.tags):
+                    names.add(name)
         return names
 
     def _resolve_provider(self, tool_name: str) -> Any | None:
-        for provider in self._providers:
-            if provider.has_tool(tool_name):
-                return provider
+        for provider_name, provider in self._provider_entries():
+            if not provider.has_tool(tool_name):
+                continue
+            registered = provider.get_registered_tools().get(tool_name)
+            if registered is None:
+                continue
+            if not self._capability_profile.allows(provider_name, registered.tags):
+                continue
+            return provider
         return None
+
+    def _provider_entries(self) -> list[tuple[str, Any]]:
+        return [
+            ("local", self._local_provider),
+            ("mcp", self._mcp_provider),
+            ("skills", self._skill_provider),
+        ]
 
     def register_tool(
         self,
@@ -257,6 +286,7 @@ class ToolsRegistry:
         parameters: dict[str, Any],
         handler: Callable[..., Any],
         provenance: str = "runtime:user",
+        tags: frozenset[str] | None = None,
     ) -> None:
         if self._tool_name_exists(name):
             raise ToolsRegistryError(f"Duplicate tool name: {name}")
@@ -267,6 +297,7 @@ class ToolsRegistry:
                 parameters=parameters,
                 handler=handler,
                 provenance=provenance,
+                tags=tags,
             )
         except ToolProviderError as exc:
             raise ToolsRegistryError(str(exc)) from exc
@@ -514,19 +545,13 @@ class ToolsRegistry:
         return self._skill_provider.get_protected_skill_context()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        schemas: list[dict[str, Any]] = []
-        for provider in self._providers:
-            schemas.extend(provider.get_tool_schemas())
-        return schemas
+        return [registered.schema for registered in self._visible_registered_tools().values()]
 
     def get_all_tools(self) -> dict[str, str]:
-        tools: dict[str, str] = {}
-        for provider in self._providers:
-            for name, description in provider.get_all_tools().items():
-                if name in tools:
-                    raise ToolsRegistryError(f"Duplicate tool name: {name}")
-                tools[name] = description
-        return tools
+        return {
+            name: registered.schema["function"]["description"]
+            for name, registered in self._visible_registered_tools().items()
+        }
 
     def get_tool_provenance(self, tool_name: str) -> str:
         provider = self._resolve_provider(tool_name)
@@ -545,3 +570,13 @@ class ToolsRegistry:
             return provider.execute(tool_name, **tool_args)
         except ToolProviderError as exc:
             raise ToolsRegistryError(str(exc)) from exc
+
+
+def _tags_for_core_tool(tool_name: str) -> frozenset[str]:
+    if tool_name in {"read_file", "write_file", "edit_file"}:
+        return frozenset({"file"})
+    if tool_name == "run_shell":
+        return frozenset({"shell"})
+    if tool_name.startswith("tmux_"):
+        return frozenset({"tmux"})
+    return frozenset({"general"})

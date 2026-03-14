@@ -17,6 +17,7 @@ class RegisteredTool:
     schema: dict[str, Any]
     handler: Callable[..., Any]
     provenance: str
+    tags: frozenset[str]
 
 
 def build_tool_schema(
@@ -84,6 +85,7 @@ class LocalToolProvider(BaseToolProvider):
         parameters: dict[str, Any],
         handler: Callable[..., Any],
         provenance: str,
+        tags: frozenset[str] | None = None,
     ) -> None:
         if name in self._tools:
             raise ToolProviderError(f"Duplicate tool name: {name}")
@@ -95,6 +97,7 @@ class LocalToolProvider(BaseToolProvider):
             ),
             handler=handler,
             provenance=provenance,
+            tags=tags or frozenset({"general"}),
         )
 
     def unregister_tool(self, tool_name: str) -> None:
@@ -131,6 +134,7 @@ class MCPToolProvider(BaseToolProvider):
                     **kwargs,
                 ),
                 provenance=f"mcp:{tool.server_name}",
+                tags=frozenset({"mcp"}),
             )
 
     def list_server_statuses(self) -> list[dict[str, Any]]:
@@ -197,6 +201,7 @@ class SkillToolProvider(BaseToolProvider):
                 ),
                 handler=tool.handler,
                 provenance=f"skill:{activation.skill_id}",
+                tags=frozenset({"skill-runtime"}),
             )
         self._tools.update(registered_tools)
         return activation
@@ -258,6 +263,7 @@ class SkillToolProvider(BaseToolProvider):
                     ),
                     handler=tool.handler,
                     provenance=f"skill:{activation.skill_id}",
+                    tags=frozenset({"skill-runtime"}),
                 )
             restored_payloads.append(activation.to_dict())
         return restored_payloads
