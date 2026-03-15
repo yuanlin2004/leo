@@ -10,7 +10,7 @@ from typing import Any, Callable, Sequence
 
 from leo import LeoLLMClient
 from leo.agent_spec import AgentSpec, AgentSpecError, load_agent_spec
-from leo.agents import ReActAgent, SimpleAgent
+from leo.agents import PlanExecuteAgent, ReActAgent, SimpleAgent
 from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
 from leo.core.logging_utils import resolve_log_level
@@ -45,7 +45,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
     profile_choices = tuple(sorted(BUILTIN_CAPABILITY_PROFILES))
     parser.add_argument(
         "--agent",
-        choices=["react", "simple"],
+        choices=["react", "simple", "plan-execute"],
         default=os.getenv("LEO_AGENT", "react"),
         help="Agent implementation to use.",
     )
@@ -204,7 +204,7 @@ def build_agent(
     tools_registry: ToolsRegistry | None = None,
     llm: Any | None = None,
     extra_system_prompt: str | None = None,
-) -> ReActAgent | SimpleAgent:
+) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
     spec = resolve_runtime_agent_spec(args)
     profile = resolve_capability_profile(args.profile or spec.capability_profile)
     registry = tools_registry or ToolsRegistry(
@@ -231,6 +231,13 @@ def build_agent(
             tools_registry=registry,
             extra_system_prompt=combined_extra_prompt,
         )
+    if args.agent == "plan-execute":
+        return PlanExecuteAgent(
+            name="leo-plan-execute",
+            llm=llm_client,
+            tools_registry=registry,
+            extra_system_prompt=combined_extra_prompt,
+        )
     return ReActAgent(
         name="leo-react",
         llm=llm_client,
@@ -239,7 +246,7 @@ def build_agent(
     )
 
 
-def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
+def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
     try:
         return build_agent(args)
     except AgentSpecError as exc:

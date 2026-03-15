@@ -64,6 +64,9 @@ def test_registry_attaches_and_detaches_environment_tools() -> None:
         "save_environment_output",
         "search_appworld_docs",
     ]
+    assert "execute_python" not in registry.get_all_tools()
+    with pytest.raises(ToolsRegistryError, match="Unknown tool: execute_python"):
+        registry.execute("execute_python", code="print('hi')")
     assert "get_environment_task_context" in registry.get_all_tools()
     assert registry.execute("get_environment_task_context") == {
         "task_id": "aw-1",

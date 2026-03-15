@@ -150,6 +150,13 @@ def test_parse_args_defaults_to_chat_for_chat_options() -> None:
     assert args.agent == "simple"
 
 
+def test_parse_args_accepts_plan_execute_agent() -> None:
+    args = parse_args(["ask", "--agent", "plan-execute", "hello"])
+
+    assert args.command == "ask"
+    assert args.agent == "plan-execute"
+
+
 def test_parse_args_loads_dotenv_defaults(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("LEO_MODEL=from-dotenv-model\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)

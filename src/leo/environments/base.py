@@ -46,6 +46,10 @@ class EnvironmentAdapter(ABC):
         self._require_initialized()
         return self._save_outputs(outputs)
 
+    def get_blocked_tool_names(self) -> set[str]:
+        self._require_initialized()
+        return set(self._get_blocked_tool_names())
+
     def evaluate_outputs(self) -> dict[str, Any] | None:
         self._require_initialized()
         return self._evaluate_outputs()
@@ -87,6 +91,9 @@ class EnvironmentAdapter(ABC):
     @abstractmethod
     def _save_outputs(self, outputs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
+
+    def _get_blocked_tool_names(self) -> set[str]:
+        return set()
 
     def _evaluate_outputs(self) -> dict[str, Any] | None:
         return None

@@ -257,8 +257,11 @@ class ToolsRegistry:
 
     def _visible_registered_tools(self) -> dict[str, Any]:
         aggregated: dict[str, Any] = {}
+        blocked = self._blocked_tool_names()
         for provider_name, provider in self._provider_entries():
             for name, registered in provider.get_registered_tools().items():
+                if name in blocked:
+                    continue
                 if not self._capability_profile.allows(provider_name, registered.tags):
                     continue
                 if name in aggregated:
@@ -271,15 +274,20 @@ class ToolsRegistry:
 
     def _current_tool_names(self, *, exclude_skill_tools: bool = False) -> set[str]:
         names: set[str] = set()
+        blocked = self._blocked_tool_names()
         for provider_name, provider in self._provider_entries():
             if exclude_skill_tools and provider is self._skill_provider:
                 continue
             for name, registered in provider.get_registered_tools().items():
+                if name in blocked:
+                    continue
                 if self._capability_profile.allows(provider_name, registered.tags):
                     names.add(name)
         return names
 
     def _resolve_provider(self, tool_name: str) -> Any | None:
+        if tool_name in self._blocked_tool_names():
+            return None
         for provider_name, provider in self._provider_entries():
             if not provider.has_tool(tool_name):
                 continue
@@ -298,6 +306,15 @@ class ToolsRegistry:
             ("mcp", self._mcp_provider),
             ("skills", self._skill_provider),
         ]
+
+    def _blocked_tool_names(self) -> set[str]:
+        adapter = self._environment_provider.adapter
+        if adapter is None:
+            return set()
+        try:
+            return adapter.get_blocked_tool_names()
+        except EnvironmentAdapterError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
 
     def register_tool(
         self,

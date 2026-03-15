@@ -28,6 +28,7 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nIf list_appworld_apis or describe_appworld_api returns an auth_hint, follow that flow exactly instead of guessing."
     "\nUse AppWorld task tools to inspect docs and execute code against the live world when needed."
     "\nUse execute_appworld_code for data access and computation inside the AppWorld world."
+    "\nDo not use execute_python for AppWorld task solving. It runs outside the live AppWorld world and can cause you to reason over incomplete copied samples."
     "\nInside execute_appworld_code, start from the objects that AppWorld preloads for you. In particular, inspect and use `apis` rather than inventing `apps`, external SDK clients, or other globals."
     "\nWhen inspecting values with execute_appworld_code, use print(...). If the last line is an expression, Leo will also try to echo it automatically."
     "\nPrefer small exploratory snippets such as print(dir(apis.spotify)) or print(apis.spotify.<candidate_api>(...)) before writing a larger query."

@@ -116,6 +116,9 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         self._world_docs_corpus: list[dict[str, Any]] = []
         self._world_api_reference: dict[str, dict[str, Any]] = {}
 
+    def _get_blocked_tool_names(self) -> set[str]:
+        return {"execute_python"}
+
     def _initialize(self) -> dict[str, Any]:
         if self._task_path is None and not self._task_payload and self._task_id:
             return self._initialize_live_task()
