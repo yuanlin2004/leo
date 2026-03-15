@@ -77,13 +77,26 @@ class SimpleAgent(Agent):
         return parsed
 
     def _format_tool_result(self, result: Any) -> str:
-        tool_text = result if isinstance(result, str) else json.dumps(result)
+        tool_text = self._summarize_tool_result(result)
         if len(tool_text) <= self._MAX_TOOL_OUTPUT_CHARS:
             return tool_text
         return (
             tool_text[: self._MAX_TOOL_OUTPUT_CHARS]
             + "\n...[truncated to keep context window manageable]"
         )
+
+    @staticmethod
+    def _summarize_tool_result(result: Any) -> str:
+        if isinstance(result, dict):
+            nested_result = result.get("result")
+            code = result.get("code")
+            if nested_result is not None and isinstance(code, str):
+                return (
+                    nested_result
+                    if isinstance(nested_result, str)
+                    else json.dumps(nested_result)
+                )
+        return result if isinstance(result, str) else json.dumps(result)
 
     def _run_loop(
         self,

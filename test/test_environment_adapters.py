@@ -582,11 +582,7 @@ def test_execute_appworld_code_returns_plain_result_without_strategy_guidance() 
 
     result = adapter.execute_task_code("'ok'")
 
-    assert result == {
-        "task_id": "aw-9",
-        "code": "'ok'",
-        "result": {"executed_code": "print('ok')"},
-    }
+    assert result == {"executed_code": "print('ok')"}
 
 
 def test_file_system_task_plan_hint_prioritizes_relevant_mutation_apis() -> None:
@@ -713,9 +709,5 @@ def test_execute_appworld_code_auto_prints_final_expression() -> None:
     result = adapter.execute_task_code("apis.supervisor.show_account_passwords()")
 
     assert result == {
-        "task_id": "aw-7",
-        "code": "apis.supervisor.show_account_passwords()",
-        "result": {
-            "executed_code": "print(apis.supervisor.show_account_passwords())",
-        },
+        "executed_code": "print(apis.supervisor.show_account_passwords())",
     }

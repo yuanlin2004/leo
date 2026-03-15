@@ -146,6 +146,21 @@ def test_react_agent_accepts_tool_requested_auto_final_answer() -> None:
     assert result is None
 
 
+def test_react_agent_formats_execute_appworld_code_result_without_echoed_code() -> None:
+    agent = ReActAgent(name="react", llm=FakeLLM(responses=[]), tools_registry=ToolsRegistry())
+
+    formatted = agent._format_tool_result(
+        {
+            "task_id": "aw-1",
+            "code": "print('hello')",
+            "result": {"executed_code": "hello"},
+        }
+    )
+
+    assert "print('hello')" not in formatted
+    assert "executed_code" in formatted
+
+
 def test_react_agent_session_persists_structured_final_answer_for_follow_ups() -> None:
     class RecordingLLM(FakeLLM):
         def __init__(self, responses: list[dict[str, object]]):

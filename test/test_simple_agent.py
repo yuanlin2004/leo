@@ -40,3 +40,18 @@ def test_simple_agent_runs_tool_then_returns_final_answer() -> None:
 
     assert result == "San Francisco is warmer."
     assert called == [("echo", "SF")]
+
+
+def test_simple_agent_formats_execute_appworld_code_result_without_echoed_code() -> None:
+    agent = SimpleAgent(name="simple", llm=FakeLLM(responses=[]), tools_registry=ToolsRegistry())
+
+    formatted = agent._format_tool_result(
+        {
+            "task_id": "aw-1",
+            "code": "print('hello')",
+            "result": {"executed_code": "hello"},
+        }
+    )
+
+    assert "print('hello')" not in formatted
+    assert "executed_code" in formatted

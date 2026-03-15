@@ -356,7 +356,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
         )
         return specs
 
-    def execute_task_code(self, code: str) -> dict[str, Any]:
+    def execute_task_code(self, code: str) -> Any:
         if not str(code or "").strip():
             raise EnvironmentAdapterError("AppWorld code execution requires non-empty code.")
         executable_code = _ensure_observable_code(code)
@@ -374,12 +374,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                     "snippet": executable_code,
                 },
             )
-            payload = {
-                "task_id": self._context.task_id if self._context is not None else self._task_id,
-                "code": code,
-                "result": _normalize_external_payload(result),
-            }
-            return payload
+            return _normalize_external_payload(result)
 
         scripted = self._task_payload.get("execution_responses")
         if isinstance(scripted, Mapping):
@@ -387,12 +382,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
             if payload is None:
                 payload = scripted.get(executable_code)
             if payload is not None:
-                response = {
-                    "task_id": self._context.task_id if self._context is not None else self._task_id,
-                    "code": code,
-                    "result": _normalize_external_payload(payload),
-                }
-                return response
+                return _normalize_external_payload(payload)
         raise EnvironmentAdapterError(
             "AppWorld code execution is unavailable for this task source."
         )
