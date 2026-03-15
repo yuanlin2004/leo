@@ -6,8 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from leo.agents import ReActAgent
-from leo.runs import AppWorldRunConfig, replay_trace, run_appworld_tasks
-from leo.runs.appworld import APPWORLD_RUN_PROMPT_SUPPLEMENT, TracingLLM
+from leo.runs import replay_trace
+from leo_plugins.appworld import (
+    APPWORLD_RUN_PROMPT_SUPPLEMENT,
+    AppWorldRunConfig,
+    TracingLLM,
+    run_appworld_tasks,
+)
 from test.fakes import FakeLLM, FakeToolCall
 
 

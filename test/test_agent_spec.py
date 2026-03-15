@@ -7,14 +7,14 @@ from leo.tools.registry import ToolsRegistry
 
 def test_load_builtin_agent_specs() -> None:
     generic = load_agent_spec("generic")
-    benchmark = load_agent_spec("appworld-benchmark")
+    benchmark = load_agent_spec("leo_plugins.appworld:builtin_agent_specs/benchmark.yaml")
 
     assert generic.id == "leo.generic"
     assert generic.capability_profile == "generic"
     assert generic.environment is None
     assert generic.plugins == ()
 
-    assert benchmark.id == "leo.appworld-benchmark"
+    assert benchmark.id == "leo_plugins.appworld.benchmark"
     assert benchmark.capability_profile == "benchmark-environment"
     assert benchmark.environment is not None
     assert benchmark.environment.id == "appworld"

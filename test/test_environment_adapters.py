@@ -5,12 +5,8 @@ import json
 import pytest
 
 from leo.agents import ReActAgent
-from leo.environments import (
-    AppWorldEnvironmentAdapter,
-    EnvironmentAdapter,
-    EnvironmentAdapterError,
-    EnvironmentToolSpec,
-)
+from leo.environments import EnvironmentAdapter, EnvironmentAdapterError, EnvironmentToolSpec
+from leo_plugins.appworld import AppWorldEnvironmentAdapter
 from leo.tools.registry import ToolsRegistry, ToolsRegistryError
 from test.fakes import FakeLLM, FakeToolCall
 

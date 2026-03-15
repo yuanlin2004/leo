@@ -1,0 +1,10 @@
+id: leo_plugins.appworld.benchmark
+version: "1"
+display_name: AppWorld Benchmark
+description: AppWorld benchmark-oriented agent spec.
+capability_profile: benchmark-environment
+environment:
+  id: appworld
+  kind: plugin
+skills: []
+plugins: []

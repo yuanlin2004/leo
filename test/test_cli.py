@@ -119,7 +119,7 @@ def test_parse_args_uses_nemotron_as_default_model(monkeypatch) -> None:
 
 
 def test_parse_args_for_run_command_defaults_to_benchmark_environment() -> None:
-    args = parse_args(["run", "--task-id", "task-1"])
+    args = parse_args(["run", "--environment", "appworld", "--task-id", "task-1"])
 
     assert args.command == "run"
     assert args.environment == "appworld"
@@ -384,7 +384,8 @@ def test_run_replay_outputs_trace_summary(tmp_path: Path) -> None:
     assert code == 0
     replay_payload = json.loads(outputs[0])
     assert replay_payload["trace_path"] == str(trace_path.resolve())
-    assert replay_payload["event_types"] == {"run_start": 1}
+    assert replay_payload["event_count"] == 1
+    assert replay_payload["events"][0]["event_type"] == "run_start"
 
 
 def test_run_chat_commands_work() -> None:

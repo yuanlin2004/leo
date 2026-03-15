@@ -57,9 +57,7 @@ class AgentSpec:
 
 _BUILTIN_AGENT_SPEC_ALIASES = {
     "generic": "generic.yaml",
-    "appworld-benchmark": "appworld-benchmark.yaml",
     "leo.generic": "generic.yaml",
-    "leo.appworld-benchmark": "appworld-benchmark.yaml",
 }
 
 
@@ -73,6 +71,8 @@ def load_agent_spec(spec_ref: str | Path) -> AgentSpec:
     builtin_name = _BUILTIN_AGENT_SPEC_ALIASES.get(text)
     if builtin_name is not None:
         return _load_builtin_agent_spec_file(builtin_name)
+    if ":" in text and not text.startswith("/") and not text.startswith("./") and not text.startswith("../"):
+        return _load_agent_spec_resource(text)
     return _load_agent_spec_path(Path(text))
 
 
@@ -82,7 +82,7 @@ def load_builtin_agent_spec(name: str) -> AgentSpec:
         raise AgentSpecError("Builtin agent spec name must be non-empty.")
     builtin_name = _BUILTIN_AGENT_SPEC_ALIASES.get(text)
     if builtin_name is None:
-        available = ", ".join(sorted({"generic", "appworld-benchmark"}))
+        available = ", ".join(sorted({"generic"}))
         raise AgentSpecError(
             f"Unknown builtin agent spec: {text}. Expected one of {available}."
         )
@@ -95,6 +95,20 @@ def _load_builtin_agent_spec_file(filename: str) -> AgentSpec:
     return _load_agent_spec_payload(
         yaml.safe_load(spec_path.read_text(encoding="utf-8")),
         source=str(spec_path),
+    )
+
+
+def _load_agent_spec_resource(ref: str) -> AgentSpec:
+    package_name, _, resource_name = ref.partition(":")
+    if not package_name or not resource_name:
+        raise AgentSpecError(
+            f"Agent spec resource reference must use package:path syntax: {ref!r}"
+        )
+    package_root = files(package_name.strip())
+    resource = package_root.joinpath(resource_name.strip())
+    return _load_agent_spec_payload(
+        yaml.safe_load(resource.read_text(encoding="utf-8")),
+        source=f"{package_name}:{resource_name}",
     )
 
 

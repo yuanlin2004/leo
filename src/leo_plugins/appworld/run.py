@@ -9,10 +9,9 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
 
-from leo.environments import AppWorldEnvironmentAdapter
+from leo.runs import RunTraceRecorder
 from leo.tools import MCPServerConfig, ToolsRegistry
-
-from .trace import RunTraceRecorder
+from .adapter import AppWorldEnvironmentAdapter
 
 APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nYou are solving an AppWorld task."
