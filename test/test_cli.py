@@ -24,6 +24,7 @@ class FakeToolsRegistry:
         self.activated_skill_ids: list[str] = []
         self.restored_skill_ids: list[list[str]] = []
         self.tools = {
+            "list_loaded_plugins": "List the explicitly authorized plugins loaded into the current agent runtime.",
             "list_mcp_servers": "List configured MCP servers, their connection status, and discovered tool names.",
             "list_available_skills": "List discovered skills with compact metadata only.",
             "activate_skill": "Activate a skill and register its contributed tools.",
@@ -170,11 +171,13 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
             user_skills_root=None,
             mcp_config_path=None,
             capability_profile=None,
+            plugin_ids=None,
         ) -> None:
             captured["skills_root"] = skills_root
             captured["user_skills_root"] = user_skills_root
             captured["mcp_config_path"] = mcp_config_path
             captured["capability_profile"] = capability_profile
+            captured["plugin_ids"] = plugin_ids
 
         def get_all_tools(self) -> dict[str, str]:
             return {}
@@ -205,6 +208,7 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
     assert captured["user_skills_root"] == fake_home / ".leo" / "skills"
     assert captured["mcp_config_path"] is None
     assert captured["capability_profile"].name == "generic"
+    assert captured["plugin_ids"] == []
 
 
 def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
@@ -218,8 +222,10 @@ def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
             user_skills_root=None,
             mcp_config_path=None,
             capability_profile=None,
+            plugin_ids=None,
         ) -> None:
             captured["capability_profile"] = capability_profile
+            captured["plugin_ids"] = plugin_ids
 
         def get_all_tools(self) -> dict[str, str]:
             return {}
@@ -243,6 +249,64 @@ def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
 
     assert captured["capability_profile"].name == "benchmark-environment"
     assert "restricted environment" in captured["extra_system_prompt"]
+    assert captured["plugin_ids"] == []
+
+
+def test_create_agent_loads_plugin_ids_from_explicit_agent_spec(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    spec_path = tmp_path / "agent-spec.yaml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "id: custom.agent",
+                "version: '1'",
+                "display_name: Custom Agent",
+                "description: Custom agent spec for tests.",
+                "capability_profile: generic",
+                "plugins:",
+                "  - id: echo-plugin",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class StubRegistry:
+        def __init__(
+            self,
+            skills_root=None,
+            *,
+            user_skills_root=None,
+            mcp_config_path=None,
+            capability_profile=None,
+            plugin_ids=None,
+        ) -> None:
+            captured["capability_profile"] = capability_profile
+            captured["plugin_ids"] = plugin_ids
+
+        def get_all_tools(self) -> dict[str, str]:
+            return {}
+
+    class StubLLM:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+    class StubAgent:
+        def __init__(self, name, llm, tools_registry, extra_system_prompt=None) -> None:
+            captured["extra_system_prompt"] = extra_system_prompt
+
+    args = parse_args(
+        ["chat", "--agent-spec", str(spec_path), "--no-banner"]
+    )
+
+    with (
+        patch("leo.cli.main.ToolsRegistry", StubRegistry),
+        patch("leo.cli.main.LeoLLMClient", StubLLM),
+        patch("leo.cli.main.ReActAgent", StubAgent),
+    ):
+        create_agent(args)
+
+    assert captured["capability_profile"].name == "generic"
+    assert captured["plugin_ids"] == ["echo-plugin"]
 
 
 def test_run_ask_uses_agent_run() -> None:

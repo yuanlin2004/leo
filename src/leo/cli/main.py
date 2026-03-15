@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from leo import LeoLLMClient
+from leo.agent_spec import AgentSpec, AgentSpecError, load_agent_spec
 from leo.agents import ReActAgent, SimpleAgent
 from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
@@ -57,6 +58,14 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         "--model",
         default=os.getenv("LEO_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
         help="Model ID for the selected provider.",
+    )
+    parser.add_argument(
+        "--agent-spec",
+        default=os.getenv("LEO_AGENT_SPEC"),
+        help=(
+            "Path or builtin name for an AgentSpec. "
+            "Builtins: generic, appworld-benchmark."
+        ),
     )
     parser.add_argument(
         "--skills-root",
@@ -258,6 +267,15 @@ def create_llm_client(args: argparse.Namespace) -> LeoLLMClient:
     )
 
 
+def resolve_runtime_agent_spec(args: argparse.Namespace) -> AgentSpec:
+    spec_ref = getattr(args, "agent_spec", None)
+    if spec_ref:
+        return load_agent_spec(spec_ref)
+    if args.command in {"run", "evaluate"}:
+        return load_agent_spec("appworld-benchmark")
+    return load_agent_spec("generic")
+
+
 def build_agent(
     args: argparse.Namespace,
     *,
@@ -265,16 +283,24 @@ def build_agent(
     llm: Any | None = None,
     extra_system_prompt: str | None = None,
 ) -> ReActAgent | SimpleAgent:
-    profile = resolve_capability_profile(args.profile)
+    spec = resolve_runtime_agent_spec(args)
+    profile = resolve_capability_profile(args.profile or spec.capability_profile)
     registry = tools_registry or ToolsRegistry(
         skills_root=args.skills_root,
         user_skills_root=Path.home() / ".leo" / "skills",
         mcp_config_path=args.mcp_config,
         capability_profile=profile,
+        plugin_ids=spec.plugin_ids(),
     )
     llm_client = llm or create_llm_client(args)
     combined_extra_prompt = "".join(
-        part for part in [profile.extra_system_prompt, extra_system_prompt] if part
+        part
+        for part in [
+            spec.extra_system_prompt,
+            profile.extra_system_prompt,
+            extra_system_prompt,
+        ]
+        if part
     ) or None
     if args.agent == "simple":
         return SimpleAgent(
@@ -292,7 +318,10 @@ def build_agent(
 
 
 def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent:
-    return build_agent(args)
+    try:
+        return build_agent(args)
+    except AgentSpecError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_ask(
@@ -357,6 +386,7 @@ def _format_config(args: argparse.Namespace) -> str:
             f"- agent: {args.agent}",
             f"- provider: {args.provider}",
             f"- model: {args.model}",
+            f"- agent_spec: {getattr(args, 'agent_spec', None) or '(builtin default)'}",
             f"- profile: {args.profile}",
             f"- temperature: {args.temperature}",
             f"- max_iterations: {args.max_iterations}",

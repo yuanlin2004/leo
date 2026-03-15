@@ -1,0 +1,7 @@
+id: leo.generic
+version: "1"
+display_name: Leo Generic
+description: Generic Leo agent spec for ask and chat flows.
+capability_profile: generic
+skills: []
+plugins: []

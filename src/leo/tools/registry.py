@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from leo.plugins import PluginError, PluginManager
 from leo.environments import EnvironmentAdapter, EnvironmentAdapterError
 from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
@@ -43,10 +44,14 @@ class ToolsRegistry:
         mcp_servers: list[MCPServerConfig] | None = None,
         mcp_config_path: str | Path | None = None,
         capability_profile: CapabilityProfile | str | None = None,
+        plugin_ids: list[str] | tuple[str, ...] | None = None,
+        plugin_manager: PluginManager | None = None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._capability_profile = resolve_capability_profile(capability_profile)
         self._event_callback = event_callback
+        self._plugin_manager = plugin_manager or PluginManager()
+        self._loaded_plugin_ids: list[str] = []
         self._core_runtime = CoreToolRuntime(workspace_root=workspace_root)
         self._local_provider = LocalToolProvider()
         self._environment_provider = EnvironmentToolProvider()
@@ -66,6 +71,7 @@ class ToolsRegistry:
         ]
         self._register_core_tools()
         self._register_meta_tools()
+        self._load_plugins(plugin_ids or ())
 
     def _register_core_tools(self) -> None:
         for name, description, parameters, handler in build_core_tool_specs(
@@ -81,6 +87,14 @@ class ToolsRegistry:
             )
 
     def _register_meta_tools(self) -> None:
+        self.register_tool(
+            name="list_loaded_plugins",
+            description="List the explicitly authorized plugins loaded into the current agent runtime.",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda: self.list_loaded_plugins(),
+            provenance="runtime:core",
+            tags=frozenset({"meta"}),
+        )
         self.register_tool(
             name="list_mcp_servers",
             description="List configured MCP servers, their connection status, and discovered tool names.",
@@ -318,6 +332,9 @@ class ToolsRegistry:
     def list_mcp_servers(self) -> list[dict[str, Any]]:
         return self._mcp_provider.list_server_statuses()
 
+    def list_loaded_plugins(self) -> list[str]:
+        return list(self._loaded_plugin_ids)
+
     def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
         if self._event_callback is None:
             return
@@ -502,6 +519,24 @@ class ToolsRegistry:
 
     def reset_session_state(self) -> None:
         self.reset_run_state(preserve_environment=False)
+
+    def _load_plugins(self, plugin_ids: list[str] | tuple[str, ...]) -> None:
+        try:
+            plugins = self._plugin_manager.load_plugins(plugin_ids)
+        except PluginError as exc:
+            raise ToolsRegistryError(str(exc)) from exc
+        for plugin in plugins:
+            plugin_id = plugin.plugin_id
+            for tool in plugin.get_tool_specs():
+                self.register_tool(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=tool.parameters,
+                    handler=tool.handler,
+                    provenance=f"plugin:{plugin_id}",
+                    tags=tool.tags,
+                )
+            self._loaded_plugin_ids.append(plugin_id)
 
     def attach_environment(self, adapter: EnvironmentAdapter) -> dict[str, Any]:
         self.detach_environment()

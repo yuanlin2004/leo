@@ -1,0 +1,1 @@
+"""Builtin AgentSpec resource package."""
