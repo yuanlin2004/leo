@@ -98,3 +98,43 @@ def test_plan_execute_agent_session_replans_each_turn() -> None:
     assert second == "two"
     assert llm.calls[0]["tools"] is None
     assert llm.calls[2]["tools"] is None
+
+
+def test_plan_execute_agent_replans_within_turn_after_tool_failure() -> None:
+    class RecordingLLM(FakeLLM):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.calls: list[dict[str, object]] = []
+
+        def complete(self, messages, tools=None):
+            self.calls.append(
+                {
+                    "messages": json.loads(json.dumps(messages)),
+                    "tools": tools,
+                }
+            )
+            return super().complete(messages=messages, tools=tools)
+
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="fragile",
+        description="Fails once, then is no longer needed.",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        handler=lambda: "Execution failed. bad first attempt",
+    )
+    llm = RecordingLLM(
+        responses=[
+            {"content": "Plan:\n1. Try fragile.\nFinish when: better plan is known."},
+            {"content": "", "tool_calls": [FakeToolCall("call-fragile", "fragile", "{}")]},
+            {"content": "Plan:\n1. Return final answer.\nFinish when: done."},
+            {"content": "", "tool_calls": [FakeToolCall("call-final", "final_answer", json.dumps({"answer": "done"}))]},
+        ]
+    )
+
+    agent = PlanExecuteAgent(name="planner", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=4)
+
+    assert result == "done"
+    planning_calls = [call for call in llm.calls if call["tools"] is None]
+    assert len(planning_calls) == 2

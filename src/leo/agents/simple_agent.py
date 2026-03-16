@@ -77,13 +77,7 @@ class SimpleAgent(Agent):
         return parsed
 
     def _format_tool_result(self, result: Any) -> str:
-        tool_text = self._summarize_tool_result(result)
-        if len(tool_text) <= self._MAX_TOOL_OUTPUT_CHARS:
-            return tool_text
-        return (
-            tool_text[: self._MAX_TOOL_OUTPUT_CHARS]
-            + "\n...[truncated to keep context window manageable]"
-        )
+        return self._summarize_tool_result(result)
 
     @staticmethod
     def _summarize_tool_result(result: Any) -> str:
@@ -163,5 +157,3 @@ class SimpleAgent(Agent):
             run_loop=self._run_loop,
             reset_callback=self.tools_registry.reset_session_state,
         )
-
-    _MAX_TOOL_OUTPUT_CHARS = 4000
