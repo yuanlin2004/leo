@@ -9,7 +9,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
 
-from leo.runs import RunTraceRecorder
+from leo.runs import ConciseTraceRecorder, RunTraceRecorder
 from leo.tools import MCPServerConfig, ToolsRegistry
 from .adapter import AppWorldEnvironmentAdapter
 
@@ -45,6 +45,20 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
 )
 
 
+def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
+    instruction = str(task_context.get("instruction") or "").strip()
+    task_id = str(task_context.get("task_id") or "").strip()
+    lines = [
+        "Solve the active AppWorld task using the provided environment context and tools.",
+    ]
+    if task_id:
+        lines.append(f"Task ID: {task_id}")
+    if instruction:
+        lines.append(f"Goal: {instruction}")
+    lines.append("Return the full final answer via final_answer.")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class AppWorldRunConfig:
     dataset_name: str = "train"
@@ -56,6 +70,7 @@ class AppWorldRunConfig:
     user_skills_root: Path | None = None
     workspace_root: Path | None = None
     max_iterations: int = 10
+    concise_trace: bool = False
     use_mcp_tools: bool = False
     appworld_mcp_url: str | None = None
     appworld_mcp_command: tuple[str, ...] = ()
@@ -79,6 +94,7 @@ class AppWorldTaskResult:
     evaluation: dict[str, Any] | None
     artifact_dir: str
     trace_path: str
+    concise_trace_path: str | None = None
     output_directory: str | None = None
     error: str | None = None
     used_mcp_tools: bool = False
@@ -91,6 +107,7 @@ class AppWorldTaskResult:
             "evaluation": self.evaluation,
             "artifact_dir": self.artifact_dir,
             "trace_path": self.trace_path,
+            "concise_trace_path": self.concise_trace_path,
             "output_directory": self.output_directory,
             "error": self.error,
             "used_mcp_tools": self.used_mcp_tools,
@@ -161,6 +178,25 @@ class TracingLLM:
         return getattr(self._llm, name)
 
 
+class _CombinedTraceRecorder:
+    def __init__(
+        self,
+        full_trace: RunTraceRecorder,
+        concise_trace: ConciseTraceRecorder | None,
+    ) -> None:
+        self._full_trace = full_trace
+        self._concise_trace = concise_trace
+
+    @property
+    def path(self) -> Path:
+        return self._full_trace.path
+
+    def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        self._full_trace.emit(event_type, payload)
+        if self._concise_trace is not None:
+            self._concise_trace.emit(event_type, payload)
+
+
 def run_appworld_tasks(
     config: AppWorldRunConfig,
     *,
@@ -176,7 +212,14 @@ def run_appworld_tasks(
         artifact_dir = artifact_root / task_input["task_id"]
         artifact_dir.mkdir(parents=True, exist_ok=True)
         trace = RunTraceRecorder(artifact_dir / "trace.jsonl")
-        trace.emit("run_start", {"task": task_input, "evaluate": evaluate})
+        concise_trace = (
+            ConciseTraceRecorder(artifact_dir / "trace.concise.txt")
+            if config.concise_trace
+            else None
+        )
+        combined_trace = _CombinedTraceRecorder(trace, concise_trace)
+
+        combined_trace.emit("run_start", {"task": task_input, "evaluate": evaluate})
 
         registry = ToolsRegistry(
             skills_root=config.skills_root,
@@ -184,7 +227,7 @@ def run_appworld_tasks(
             workspace_root=config.workspace_root,
             mcp_servers=_build_mcp_server_configs(config, task_input["task_id"]),
             capability_profile="benchmark-environment",
-            event_callback=trace.emit,
+            event_callback=combined_trace.emit,
         )
         adapter = _build_adapter(config, task_input)
 
@@ -195,14 +238,15 @@ def run_appworld_tasks(
         success = False
         try:
             attached = registry.attach_environment(adapter)
-            trace.emit("task_context", attached)
-            agent = agent_builder(registry, APPWORLD_RUN_PROMPT_SUPPLEMENT, trace)
-            prompt = (
-                "Solve the active AppWorld task using the provided environment context and tools. "
-                "Return the full final answer via final_answer."
+            combined_trace.emit("task_context", attached)
+            agent = agent_builder(
+                registry,
+                APPWORLD_RUN_PROMPT_SUPPLEMENT,
+                combined_trace,
             )
+            prompt = _build_appworld_user_prompt(attached["context"])
             final_answer = agent.run(prompt, max_iterations=config.max_iterations)
-            trace.emit("final_answer", {"answer": final_answer})
+            combined_trace.emit("final_answer", {"answer": final_answer})
             saved = registry.save_environment_outputs(
                 {
                     "name": "answer",
@@ -219,13 +263,13 @@ def run_appworld_tasks(
             success = True
         except Exception as exc:
             error_text = str(exc)
-            trace.emit("task_error", {"error": error_text})
+            combined_trace.emit("task_error", {"error": error_text})
             _write_text(artifact_dir / "error.txt", error_text)
         finally:
             try:
                 registry.detach_environment()
             except Exception as detach_exc:
-                trace.emit("environment_detach_error", {"error": str(detach_exc)})
+                combined_trace.emit("environment_detach_error", {"error": str(detach_exc)})
 
         result = AppWorldTaskResult(
             task_id=task_input["task_id"],
@@ -234,12 +278,13 @@ def run_appworld_tasks(
             evaluation=evaluation_payload,
             artifact_dir=str(artifact_dir),
             trace_path=str(trace.path),
+            concise_trace_path=str(concise_trace.path) if concise_trace is not None else None,
             output_directory=output_directory,
             error=error_text,
             used_mcp_tools=config.use_mcp_tools,
         )
         _write_json(artifact_dir / "result.json", result.to_dict())
-        trace.emit("run_complete", result.to_dict())
+        combined_trace.emit("run_complete", result.to_dict())
         results.append(result)
 
     summary = AppWorldRunSummary(

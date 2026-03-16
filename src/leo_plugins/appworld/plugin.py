@@ -115,6 +115,7 @@ class AppWorldEnvironmentPlugin:
             user_skills_root=Path.home() / ".leo" / "skills",
             workspace_root=Path.cwd().resolve(),
             max_iterations=args.max_iterations,
+            concise_trace=str(args.log_level).strip().upper() == "CONCISE",
             use_mcp_tools=bool(args.appworld_mcp),
             appworld_mcp_url=args.appworld_mcp_url,
             appworld_mcp_command=parse_mcp_command(args.appworld_mcp_command),

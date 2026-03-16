@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from leo.cli.banner import render_leo_banner
-from leo.cli.main import create_agent, parse_args, run
+from leo.cli.main import _format_config, create_agent, parse_args, run
 
 
 class FakeToolsRegistry:
@@ -126,6 +126,15 @@ def test_parse_args_for_run_command_defaults_to_benchmark_environment() -> None:
     assert args.task_id == ["task-1"]
     assert args.profile == "benchmark-environment"
     assert args.temperature == 0.0
+
+
+def test_parse_args_accepts_concise_log_level() -> None:
+    args = parse_args(
+        ["evaluate", "--environment", "appworld", "--task-id", "task-1", "--log-level", "CONCISE"]
+    )
+
+    assert args.command == "evaluate"
+    assert args.log_level == "CONCISE"
 
 
 def test_parse_args_for_replay_command() -> None:
@@ -492,7 +501,8 @@ def test_run_chat_shows_banner_by_default() -> None:
 
     assert code == 0
     assert outputs[0] == render_leo_banner()
-    assert outputs[1] == "Leo chat started. Type /help for commands."
+    assert outputs[1] == _format_config(args)
+    assert outputs[2] == "Leo chat started. Type /help for commands."
 
 
 def test_run_chat_save_and_load_transcript(tmp_path: Path, monkeypatch) -> None:

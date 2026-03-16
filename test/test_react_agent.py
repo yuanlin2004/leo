@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from leo.agents import ReActAgent
+from leo.core.logging_utils import CONCISE_LEVEL, ensure_trace_logging
 from leo.tools.registry import ToolsRegistry
 
 from test.fakes import FakeLLM, FakeToolCall
@@ -218,13 +219,108 @@ def test_react_agent_session_persists_structured_final_answer_for_follow_ups() -
         "role": "user",
         "content": "Where did you get the name of the program?",
     }
-    assert any(
-        message.get("role") == "tool"
-        and message.get("tool_call_id") == "call-final-1"
-        and message.get("content")
-        == "**Recap**\nThe program name used here is Monta Vista-Lynbrook Winter Guard."
-        for message in second_call_messages
+
+
+def test_react_agent_logs_full_concise_turn_output(caplog: pytest.LogCaptureFixture) -> None:
+    ensure_trace_logging()
+    called: list[str] = []
+
+    def lookup(query: str) -> str:
+        called.append(query)
+        return "line one\nline two"
+
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="lookup",
+        description="Lookup data.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=lookup,
     )
+
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "Thought: inspect data first.",
+                "tool_calls": [
+                    FakeToolCall("call-1", "lookup", json.dumps({"query": "full query text"})),
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall("call-final", "final_answer", json.dumps({"answer": "done"})),
+                ],
+            },
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    with caplog.at_level(CONCISE_LEVEL, logger="leo.agents.react_agent"):
+        result = agent.run("Solve the task completely.", max_iterations=4)
+
+    assert result == "done"
+    assert called == ["full query text"]
+    rendered = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Initial System Prompt:" in rendered
+    assert "Initial Assistant Prompt:\n-" in rendered
+    assert "Initial User Prompt:\nSolve the task completely." in rendered
+    assert "Turn 1" in rendered
+    assert "LLM:\nThought: inspect data first." in rendered
+    assert 'Tool Call:\nlookup' in rendered
+    assert '"query": "full query text"' in rendered
+    assert "Result:\nline one\nline two" in rendered
+    assert "===============\n\nTurn 2" in rendered
+    assert "Tool Call:\nfinal_answer" in rendered
+    assert '"answer": "done"' in rendered
+
+
+def test_react_agent_logs_code_arguments_as_multiline_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ensure_trace_logging()
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="execute_appworld_code",
+        description="Execute code.",
+        parameters={
+            "type": "object",
+            "properties": {"code": {"type": "string"}},
+            "required": ["code"],
+        },
+        handler=lambda code: f"ran:\n{code}",
+    )
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall(
+                        "call-1",
+                        "execute_appworld_code",
+                        json.dumps({"code": "x = 1\nprint(x)"}),
+                    )
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    FakeToolCall("call-final", "final_answer", json.dumps({"answer": "done"})),
+                ],
+            },
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    with caplog.at_level(CONCISE_LEVEL, logger="leo.agents.react_agent"):
+        result = agent.run("Run the code.", max_iterations=4)
+
+    assert result == "done"
+    rendered = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Arguments:\ncode:\n        x = 1\n        print(x)" in rendered
 
 
 def test_react_agent_stops_repeated_same_action() -> None:

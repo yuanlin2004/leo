@@ -20,7 +20,7 @@ from leo.runs import replay_trace
 from leo.tools.profiles import BUILTIN_CAPABILITY_PROFILES, resolve_capability_profile
 from leo.tools.registry import ToolsRegistry
 
-VALID_LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+VALID_LOG_LEVELS = ("TRACE", "DEBUG", "CONCISE", "INFO", "WARNING", "ERROR", "CRITICAL")
 COMMAND_NAMES = {"ask", "chat", "run", "evaluate", "replay"}
 HELP_FLAGS = {"-h", "--help"}
 
@@ -98,7 +98,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--log-level",
         default=os.getenv("LEO_LOG_LEVEL", "INFO"),
-        help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR).",
+        help="Logging level (TRACE, DEBUG, CONCISE, INFO, WARNING, ERROR).",
     )
 
 
@@ -174,7 +174,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     replay_parser.add_argument(
         "--log-level",
         default=os.getenv("LEO_LOG_LEVEL", "INFO"),
-        help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR).",
+        help="Logging level (TRACE, DEBUG, CONCISE, INFO, WARNING, ERROR).",
     )
 
     _register_environment_plugin_options(run_parser, raw_argv)
@@ -485,6 +485,7 @@ def run_chat(
     session = agent.create_session()
     if not args.no_banner:
         output_fn(render_leo_banner())
+        output_fn(_format_config(args))
     output_fn("Leo chat started. Type /help for commands.")
 
     while True:

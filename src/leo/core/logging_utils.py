@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 TRACE_LEVEL = 5
+CONCISE_LEVEL = 15
 
 
 class LeoOnlyFilter(logging.Filter):
@@ -15,6 +16,9 @@ def ensure_trace_logging() -> None:
     if not hasattr(logging, "TRACE"):
         setattr(logging, "TRACE", TRACE_LEVEL)
         logging.addLevelName(TRACE_LEVEL, "TRACE")
+    if not hasattr(logging, "CONCISE"):
+        setattr(logging, "CONCISE", CONCISE_LEVEL)
+        logging.addLevelName(CONCISE_LEVEL, "CONCISE")
 
     if not hasattr(logging.Logger, "trace"):
         def trace(self: logging.Logger, message: str, *args: Any, **kwargs: Any) -> None:
@@ -29,6 +33,7 @@ def resolve_log_level(level_name: str | None) -> int:
     level_map = {
         "TRACE": TRACE_LEVEL,
         "DEBUG": logging.DEBUG,
+        "CONCISE": CONCISE_LEVEL,
         "INFO": logging.INFO,
         "WARNING": logging.WARNING,
         "ERROR": logging.ERROR,

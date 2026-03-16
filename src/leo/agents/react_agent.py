@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Any
 
-from ..core.logging_utils import TRACE_LEVEL
+from ..core.logging_utils import CONCISE_LEVEL, TRACE_LEVEL
 from ..core.llm import LeoLLMClient, LeoLLMException
 from ..tools.registry import ToolsRegistry
 from .agent import Agent
@@ -38,7 +38,6 @@ class ReActAgent(Agent):
     """
 
     _MAX_REPEAT_ACTIONS = 2
-    _MAX_TOOL_OUTPUT_CHARS = 4000
     _MAX_LOG_PREVIEW_CHARS = 200
     _FINAL_ANSWER_TOOL_NAME = "final_answer"
     _FINAL_ANSWER_TOOL_SCHEMA = {
@@ -142,13 +141,7 @@ class ReActAgent(Agent):
         return f"{tool_name}:{canonical_args}"
 
     def _format_tool_result(self, result: Any) -> str:
-        tool_text = self._summarize_tool_result(result)
-        if len(tool_text) <= self._MAX_TOOL_OUTPUT_CHARS:
-            return tool_text
-        return (
-            tool_text[: self._MAX_TOOL_OUTPUT_CHARS]
-            + "\n...[truncated to keep context window manageable]"
-        )
+        return self._summarize_tool_result(result)
 
     @staticmethod
     def _summarize_tool_result(result: Any) -> str:
@@ -226,6 +219,144 @@ class ReActAgent(Agent):
             *remainder,
         ]
 
+    @staticmethod
+    def _render_concise_value(value: Any) -> str:
+        if value is None:
+            return "-"
+        if isinstance(value, str):
+            return value if value else "-"
+        try:
+            return json.dumps(value, indent=2, sort_keys=True)
+        except TypeError:
+            return repr(value)
+
+    @classmethod
+    def _render_concise_tool_args(cls, value: Any) -> str:
+        if isinstance(value, dict):
+            rendered_parts: list[str] = []
+            non_code_items: dict[str, Any] = {}
+            for key, item in value.items():
+                if key == "code" and isinstance(item, str):
+                    rendered_parts.append(f"code:\n{cls._indent_code_block(item)}")
+                else:
+                    non_code_items[key] = item
+            if non_code_items:
+                rendered_parts.insert(0, cls._render_concise_value(non_code_items))
+            if rendered_parts:
+                return "\n".join(rendered_parts)
+        return cls._render_concise_value(value)
+
+    @staticmethod
+    def _indent_code_block(code: str) -> str:
+        lines = code.splitlines() or [code]
+        return "\n".join(f"        {line}" for line in lines)
+
+    @classmethod
+    def _extract_role_prompts(
+        cls,
+        messages: list[dict[str, Any]],
+        role_name: str,
+    ) -> str:
+        contents: list[str] = []
+        for item in messages:
+            if str(item.get("role") or "").strip() != role_name:
+                continue
+            contents.append(cls._render_concise_value(item.get("content")))
+        if not contents:
+            return "-"
+        return "\n\n".join(contents)
+
+    @classmethod
+    def _extract_current_user_prompt(cls, messages: list[dict[str, Any]]) -> str:
+        for item in reversed(messages):
+            if str(item.get("role") or "").strip() != "user":
+                continue
+            return cls._render_concise_value(item.get("content"))
+        return "-"
+
+    @staticmethod
+    def _count_role_messages(messages: list[dict[str, Any]], role_name: str) -> int:
+        return sum(
+            1
+            for item in messages
+            if str(item.get("role") or "").strip() == role_name
+        )
+
+    @classmethod
+    def _extract_new_role_prompts(
+        cls,
+        messages: list[dict[str, Any]],
+        role_name: str,
+        already_seen_count: int,
+    ) -> tuple[str, int]:
+        role_messages = [
+            cls._render_concise_value(item.get("content"))
+            for item in messages
+            if str(item.get("role") or "").strip() == role_name
+        ]
+        total_count = len(role_messages)
+        if total_count <= already_seen_count:
+            return "-", total_count
+        new_messages = role_messages[already_seen_count:]
+        if not new_messages:
+            return "-", total_count
+        return "\n\n".join(new_messages), total_count
+
+    def _log_concise_initial_prompts(self, messages: list[dict[str, Any]]) -> None:
+        if not LOGGER.isEnabledFor(CONCISE_LEVEL):
+            return
+        LOGGER.log(
+            CONCISE_LEVEL,
+            "Initial System Prompt:\n%s",
+            self._extract_role_prompts(messages, "system"),
+        )
+        LOGGER.log(
+            CONCISE_LEVEL,
+            "Initial Assistant Prompt:\n%s",
+            self._extract_role_prompts(messages, "assistant"),
+        )
+        LOGGER.log(
+            CONCISE_LEVEL,
+            "Initial User Prompt:\n%s",
+            self._extract_role_prompts(messages, "user"),
+        )
+
+    def _log_concise_turn_start(
+        self,
+        turn_number: int,
+        messages: list[dict[str, Any]],
+        seen_user_prompt_count: int,
+    ) -> None:
+        if not LOGGER.isEnabledFor(CONCISE_LEVEL):
+            return
+        if turn_number > 1:
+            LOGGER.log(CONCISE_LEVEL, "===============")
+            LOGGER.log(CONCISE_LEVEL, "")
+        LOGGER.log(CONCISE_LEVEL, "Turn %d", turn_number)
+        user_prompt, _ = self._extract_new_role_prompts(
+            messages,
+            "user",
+            seen_user_prompt_count,
+        )
+        if user_prompt != "-":
+            LOGGER.log(CONCISE_LEVEL, "User Prompt:\n%s", user_prompt)
+
+    def _log_concise_llm_response(self, content: str | None) -> None:
+        if not LOGGER.isEnabledFor(CONCISE_LEVEL):
+            return
+        LOGGER.log(CONCISE_LEVEL, "LLM:\n%s", self._render_concise_value(content))
+
+    def _log_concise_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> None:
+        if not LOGGER.isEnabledFor(CONCISE_LEVEL):
+            return
+        LOGGER.log(CONCISE_LEVEL, "Tool Call:\n%s", tool_name)
+        LOGGER.log(CONCISE_LEVEL, "Arguments:\n%s", self._render_concise_tool_args(tool_args))
+
+    def _log_concise_tool_result(self, result: Any) -> None:
+        if not LOGGER.isEnabledFor(CONCISE_LEVEL):
+            return
+        LOGGER.log(CONCISE_LEVEL, "Result:\n%s", self._render_concise_value(result))
+
     def _run_loop(
         self,
         conversation: list[dict[str, Any]],
@@ -236,6 +367,7 @@ class ReActAgent(Agent):
             user_input = str(conversation[-1].get("content") or "")
         self.tools_registry.activate_relevant_skills_for_input(user_input)
         action_counts: dict[str, int] = {}
+        seen_user_prompt_count = 0
         LOGGER.info(
             "Run start: agent=%s max_iterations=%d user_input=%s",
             self.name,
@@ -248,6 +380,22 @@ class ReActAgent(Agent):
             LOGGER.info("Turn %d: calling model", turn_number)
             tools = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
             model_messages = self._build_model_messages(conversation)
+            if turn_number == 1:
+                self._log_concise_initial_prompts(model_messages)
+                seen_user_prompt_count = self._count_role_messages(
+                    model_messages,
+                    "user",
+                )
+            self._log_concise_turn_start(
+                turn_number,
+                model_messages,
+                seen_user_prompt_count,
+            )
+            _, seen_user_prompt_count = self._extract_new_role_prompts(
+                model_messages,
+                "user",
+                seen_user_prompt_count,
+            )
             LOGGER.log(
                 TRACE_LEVEL,
                 "[request turn %d messages]\n%s",
@@ -277,6 +425,7 @@ class ReActAgent(Agent):
                 turn_number,
                 self._preview_text(assistant_content),
             )
+            self._log_concise_llm_response(assistant_content)
             if tool_calls:
                 LOGGER.info(
                     "Turn %d: tool plan=%s",
@@ -335,6 +484,12 @@ class ReActAgent(Agent):
                         "content": "" if final_answer is None else final_answer,
                     }
                 )
+                final_call_args = self._parse_tool_args(tool_calls[0].function.arguments)
+                self._log_concise_tool_call(
+                    self._FINAL_ANSWER_TOOL_NAME,
+                    final_call_args,
+                )
+                self._log_concise_tool_result("" if final_answer is None else final_answer)
                 LOGGER.info(
                     "Turn %d: final answer tool received preview=%s",
                     turn_number,
@@ -410,6 +565,7 @@ class ReActAgent(Agent):
                         tool_name,
                         json.dumps(tool_args, indent=2, default=str, sort_keys=True),
                     )
+                    self._log_concise_tool_call(tool_name, tool_args)
                     action_key = self._build_action_key(tool_name, tool_args)
                     action_counts[action_key] = action_counts.get(action_key, 0) + 1
                     LOGGER.info(
@@ -471,6 +627,7 @@ class ReActAgent(Agent):
                     tool_name,
                     formatted_result,
                 )
+                self._log_concise_tool_result(formatted_result)
 
                 auto_finalized, auto_final_answer = self._extract_auto_final_answer(result)
                 if auto_finalized:

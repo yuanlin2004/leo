@@ -137,9 +137,16 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
         output_root=tmp_path,
         workspace_root=tmp_path,
         max_iterations=6,
+        concise_trace=True,
     )
+    prompts: list[str] = []
 
     def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        class RecordingReActAgent(ReActAgent):
+            def run(self, user_input: str, max_iterations: int = 10) -> str:
+                prompts.append(user_input)
+                return super().run(user_input, max_iterations=max_iterations)
+
         llm = TracingLLM(
             FakeLLM(
                 responses=[
@@ -193,7 +200,7 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
             ),
             trace,
         )
-        return ReActAgent(
+        return RecordingReActAgent(
             name="react",
             llm=llm,
             tools_registry=registry,
@@ -208,7 +215,29 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
     assert result.success is True
     assert result.final_answer == "final appworld answer"
     assert result.evaluation == {"evaluated": True, "passed": True, "task_id": "task-direct-1"}
+    assert result.concise_trace_path is not None
+    assert prompts == [
+        "\n".join(
+            [
+                "Solve the active AppWorld task using the provided environment context and tools.",
+                "Task ID: task-direct-1",
+                "Goal: Resolve the customer billing issue.",
+                "Return the full final answer via final_answer.",
+            ]
+        )
+    ]
     assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == "final appworld answer"
+    concise_trace = Path(result.concise_trace_path).read_text(encoding="utf-8")
+    assert "Initial System Prompt:" in concise_trace
+    assert "Initial Assistant Prompt:\n-" in concise_trace
+    assert "Initial User Prompt:" in concise_trace
+    assert "Turn 1" in concise_trace
+    assert "LLM:\nNeed the task context first." in concise_trace
+    assert "Tool Call:\nget_environment_task_context" in concise_trace
+    assert "Arguments:\n{}" in concise_trace
+    assert "Result:" in concise_trace
+    assert "===============\n\nTurn 2" in concise_trace
+    assert "Final Answer:\nfinal appworld answer" in concise_trace
     replay = replay_trace(result.trace_path)
     assert replay["event_types"]["run_start"] == 1
     assert replay["event_types"]["tool_call"] >= 3
@@ -238,6 +267,7 @@ def test_run_appworld_tasks_with_mcp_tools(
         output_root=tmp_path,
         workspace_root=tmp_path,
         max_iterations=4,
+        concise_trace=True,
         use_mcp_tools=True,
         appworld_mcp_command=("python3", str(server_script)),
     )
@@ -283,6 +313,7 @@ def test_run_appworld_tasks_with_mcp_tools(
     result = summary.results[0]
     assert result.success is True
     assert result.used_mcp_tools is True
+    assert result.concise_trace_path is not None
     assert result.evaluation == {
         "task_id": "task-mcp-1",
         "evaluated": True,
@@ -311,6 +342,7 @@ def test_run_appworld_tasks_accepts_null_final_answer(
         output_root=tmp_path,
         workspace_root=tmp_path,
         max_iterations=4,
+        concise_trace=True,
     )
 
     def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
@@ -344,6 +376,7 @@ def test_run_appworld_tasks_accepts_null_final_answer(
     result = summary.results[0]
     assert result.success is True
     assert result.final_answer is None
+    assert result.concise_trace_path is not None
     assert result.evaluation == {"evaluated": True, "passed": True, "task_id": "task-null-1"}
     assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == ""
 
@@ -359,3 +392,116 @@ def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+
+
+def test_run_appworld_tasks_does_not_write_concise_trace_by_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorld,
+        load_task_ids=lambda dataset_name, root=None: ["task-default-trace-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-default-trace-1",),
+        experiment_name="default-trace-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=2,
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "done"}),
+                            )
+                        ],
+                    }
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=False)
+
+    result = summary.results[0]
+    assert result.concise_trace_path is None
+    assert not Path(result.artifact_dir, "trace.concise.txt").exists()
+
+
+def test_concise_trace_renders_code_arguments_as_multiline_code(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorld,
+        load_task_ids=lambda dataset_name, root=None: ["task-code-trace-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-code-trace-1",),
+        experiment_name="code-trace-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=3,
+        concise_trace=True,
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-1",
+                                "execute_appworld_code",
+                                json.dumps({"code": "x = 1\nprint(x)"}),
+                            )
+                        ],
+                    },
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "done"}),
+                            )
+                        ],
+                    },
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=False)
+
+    result = summary.results[0]
+    concise_trace = Path(result.concise_trace_path).read_text(encoding="utf-8")
+    assert "Arguments:\ncode:\n        x = 1\n        print(x)" in concise_trace
