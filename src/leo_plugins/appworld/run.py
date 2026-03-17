@@ -19,21 +19,31 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nNever import external packages such as spotipy, requests, browser automation, or cloud SDKs unless they are clearly part of the AppWorld runtime."
     "\nUse short verify/fix loops."
     "\nRead the active task context carefully before acting."
+    "\nThe full public task context is already injected into the prompt. Do not call get_environment_task_context at the start unless a later tool result makes you suspect the context changed or you need to re-check one specific field."
     "\nPay attention to required_apps, public_data, supervisor details, and available_apps in the task context."
     "\nStart by inspecting the task context and searching AppWorld docs for the relevant app APIs."
     "\nPrefer list_appworld_apis and describe_appworld_api to discover exact API names, required parameters, and auth requirements before writing code."
-    "\nIf list_appworld_apis returns task_plan_hint, treat it as planning guidance only. You must write the execute_appworld_code snippet yourself."
+    "\nKeep discovery tight. After one broad API listing for the target app, move to describe_appworld_api for the exact APIs you plan to call or go straight to execute_appworld_code if the required parameters are already clear."
+    "\nIf list_appworld_apis returns task_plan_hint, treat it as the default plan unless a later tool result contradicts it. You must still write the execute_appworld_code snippet yourself."
     "\nLeo does not provide task-specific solution code for AppWorld tasks."
+    "\nIf auth_hint or task_plan_hint is available, do not spend turns on broad environment exploration such as print(dir(apis)) or dumping unrelated globals. Move directly to the recommended APIs unless you still need one exact parameter name."
     "\nDo not manually retype, copy, or reconstruct access tokens from printed tool output. Keep auth and follow-up API calls inside one code snippet whenever practical."
+    "\nDo not print full credential dumps such as the entire supervisor.show_account_passwords() result. Read only the credential you need, log in, and continue inside the same snippet."
     "\nIf list_appworld_apis or describe_appworld_api returns an auth_hint, follow that flow exactly instead of guessing."
     "\nUse AppWorld task tools to inspect docs and execute code against the live world when needed."
     "\nUse execute_appworld_code for data access and computation inside the AppWorld world."
     "\nDo not use execute_python for AppWorld task solving. It runs outside the live AppWorld world and can cause you to reason over incomplete copied samples."
     "\nInside execute_appworld_code, start from the objects that AppWorld preloads for you. In particular, inspect and use `apis` rather than inventing `apps`, external SDK clients, or other globals."
     "\nWhen inspecting values with execute_appworld_code, use print(...). If the last line is an expression, Leo will also try to echo it automatically."
-    "\nPrefer small exploratory snippets such as print(dir(apis.spotify)) or print(apis.spotify.<candidate_api>(...)) before writing a larger query."
+    "\nPrefer targeted exploratory snippets only on the exact API you are about to call. Avoid print(dir(apis)), print(dir(apis.spotify)), or full-object dumps when the task context and task_plan_hint already identify the likely path."
+    "\nTreat pagination defaults as a likely failure mode. For library or list endpoints such as show_playlist_library, show_liked_playlists, show_song_library, or search results, inspect page_index/page_limit parameters and fetch all relevant pages or request a sufficiently large page_limit before ranking or aggregating."
     "\nIf an app API requires an access token, inspect supervisor and app auth APIs first. In many tasks, the correct path is supervisor.show_account_passwords -> app login -> reuse access_token in later calls."
-    "\nOnce you understand the relevant APIs, write one coherent Python snippet that does the work instead of many tiny guesses."
+    "\nInterpret ranking words literally. If the task asks for the most-liked, highest-rated, most-played, newest, oldest, or similar metric-based entity, use the explicit metric field from the relevant entity API such as like_count, rating, play_count, or created_at. Do not infer those metrics from playlist frequency, collection membership, or appearance count unless the docs explicitly define the metric that way."
+    "\nFor Spotify tasks about songs inside playlists, prefer entity APIs that expose song-level fields such as show_song when you need song like_count or other ranking metrics."
+    "\nDo not assume 'my playlists' means only playlists I own. If both show_playlist_library and show_liked_playlists are available and the task wording does not restrict ownership, check both sets before deciding the answer."
+    "\nIf a playlist or library list response already includes fields such as song_ids, like_count, rating, or created_at, use those fields directly instead of making extra calls unless you still need missing entity-level details."
+    "\nFor auth-gated retrieval tasks, prefer one coherent Python snippet that fetches the needed credential, logs in, paginates or iterates over all relevant records, computes the answer, and prints only the requested value."
+    "\nDo not split auth, credential lookup, and main retrieval into separate snippets unless a previous combined attempt failed and you are debugging a specific call."
     "\nDo not answer from a subset of records. If playlists or libraries return multiple items, aggregate across all relevant items before deciding on the final answer."
     "\nIf one code attempt fails because a module or action is not allowed, recover by trying an AppWorld-native approach instead of giving up."
     "\nThe file system in these tasks refers to the AppWorld file_system app, not the host operating system."
@@ -51,6 +61,9 @@ def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
     lines = [
         "Solve the active AppWorld task using the provided environment context and tools.",
     ]
+    lines.append(
+        "The public task context is already included above; do not call get_environment_task_context unless you need to verify a later change or re-check one specific field."
+    )
     if task_id:
         lines.append(f"Task ID: {task_id}")
     if instruction:
