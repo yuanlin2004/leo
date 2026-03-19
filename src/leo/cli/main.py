@@ -538,6 +538,10 @@ def run_environment_command(
     output_fn: Callable[[str], None] = print,
 ) -> int:
     plugin = load_environment_plugin(args.environment)
+    # Import and initialize the provider client before environment attachment.
+    # Some environments, such as AppWorld, freeze time globally during attach,
+    # which can break libraries imported later via Pydantic v1 compatibility.
+    base_llm_client = create_llm_client(args)
 
     def environment_agent_builder(
         registry: ToolsRegistry,
@@ -546,9 +550,9 @@ def run_environment_command(
     ) -> Any:
         build_llm = getattr(plugin, "build_llm", None)
         llm_client = (
-            build_llm(create_llm_client(args), trace)
+            build_llm(base_llm_client, trace)
             if callable(build_llm)
-            else create_llm_client(args)
+            else base_llm_client
         )
         return build_agent(
             args,
