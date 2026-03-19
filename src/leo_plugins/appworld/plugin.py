@@ -126,6 +126,15 @@ class AppWorldEnvironmentPlugin:
             appworld_root=Path(args.appworld_root).resolve() if args.appworld_root else None,
             task_limit=args.task_limit,
             task_offset=args.task_offset,
+            runtime_config={
+                "agent": args.agent,
+                "provider": args.provider,
+                "model": args.model,
+                "temperature": args.temperature,
+                "log_level": args.log_level,
+                "profile": args.profile,
+                "agent_spec": args.agent_spec,
+            },
         )
 
         return run_appworld_tasks(config, agent_builder=agent_builder, evaluate=evaluate)

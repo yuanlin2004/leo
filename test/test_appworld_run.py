@@ -13,6 +13,7 @@ from leo_plugins.appworld import (
     TracingLLM,
     run_appworld_tasks,
 )
+from leo_plugins.appworld.run import _build_appworld_user_prompt
 from test.fakes import FakeLLM, FakeToolCall
 
 
@@ -220,6 +221,7 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
         "\n".join(
             [
                 "Solve the active AppWorld task using the provided environment context and tools.",
+                "The public task context is already included above; do not call get_environment_task_context unless you need to verify a later change or re-check one specific field.",
                 "Task ID: task-direct-1",
                 "Goal: Resolve the customer billing issue.",
                 "Return the full final answer via final_answer.",
@@ -227,7 +229,13 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
         )
     ]
     assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == "final appworld answer"
+    saved_config = json.loads(Path(result.artifact_dir, "config.json").read_text(encoding="utf-8"))
+    assert saved_config["environment"] == "appworld"
+    assert saved_config["task"] == {"task_id": "task-direct-1"}
+    assert saved_config["config"]["experiment_name"] == "direct-test"
+    assert saved_config["config"]["max_iterations"] == 6
     concise_trace = Path(result.concise_trace_path).read_text(encoding="utf-8")
+    assert "Run Config:" in concise_trace
     assert "Initial System Prompt:" in concise_trace
     assert "Initial Assistant Prompt:\n-" in concise_trace
     assert "Initial User Prompt:" in concise_trace
@@ -392,6 +400,27 @@ def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+
+
+def test_build_appworld_user_prompt_adds_metric_guidance() -> None:
+    prompt = _build_appworld_user_prompt(
+        {
+            "task_id": "82e2fac_1",
+            "instruction": "What is the title of the most-liked song in my Spotify playlists.",
+            "public_data": {
+                "library_name": "playlists",
+                "metric_adjective": "liked",
+                "most_least": "most",
+            },
+        }
+    )
+
+    assert "Public task signals: library_name=playlists, metric_adjective=liked, most_least=most." in prompt
+    assert "Ranking rule: use the `liked` metric literally. Do not substitute a different metric." in prompt
+    assert (
+        "For this task, prefer explicit like metrics such as `like_count`; do not rank by `play_count`, frequency, or occurrences in playlists."
+        in prompt
+    )
 
 
 def test_run_appworld_tasks_does_not_write_concise_trace_by_default(

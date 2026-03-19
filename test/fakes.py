@@ -31,7 +31,12 @@ class FakeLLM:
     def __init__(self, responses: list[dict[str, Any]]):
         self._responses = list(responses)
 
-    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ):
         if not self._responses:
             raise RuntimeError("No fake responses left.")
         payload = self._responses.pop(0)

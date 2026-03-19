@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
+import traceback
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from importlib import import_module
@@ -12,6 +14,8 @@ from typing import Any, Callable
 from leo.runs import ConciseTraceRecorder, RunTraceRecorder
 from leo.tools import MCPServerConfig, ToolsRegistry
 from .adapter import AppWorldEnvironmentAdapter
+
+LOGGER = logging.getLogger("leo.appworld.run")
 
 APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nYou are solving an AppWorld task."
@@ -58,6 +62,11 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
 def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
     instruction = str(task_context.get("instruction") or "").strip()
     task_id = str(task_context.get("task_id") or "").strip()
+    public_data = task_context.get("public_data")
+    public_data = public_data if isinstance(public_data, dict) else {}
+    library_name = str(public_data.get("library_name") or "").strip()
+    metric_adjective = str(public_data.get("metric_adjective") or "").strip().lower()
+    most_least = str(public_data.get("most_least") or "").strip().lower()
     lines = [
         "Solve the active AppWorld task using the provided environment context and tools.",
     ]
@@ -68,6 +77,32 @@ def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
         lines.append(f"Task ID: {task_id}")
     if instruction:
         lines.append(f"Goal: {instruction}")
+    if library_name or metric_adjective or most_least:
+        lines.append(
+            "Public task signals: "
+            + ", ".join(
+                part
+                for part in [
+                    f"library_name={library_name}" if library_name else "",
+                    f"metric_adjective={metric_adjective}" if metric_adjective else "",
+                    f"most_least={most_least}" if most_least else "",
+                ]
+                if part
+            )
+            + "."
+        )
+    if metric_adjective:
+        lines.append(
+            f"Ranking rule: use the `{metric_adjective}` metric literally. Do not substitute a different metric."
+        )
+    if metric_adjective == "liked":
+        lines.append(
+            "For this task, prefer explicit like metrics such as `like_count`; do not rank by `play_count`, frequency, or occurrences in playlists."
+        )
+    if metric_adjective == "played":
+        lines.append(
+            "For this task, prefer explicit play metrics such as `play_count`; do not substitute `like_count` or rating."
+        )
     lines.append("Return the full final answer via final_answer.")
     return "\n".join(lines)
 
@@ -94,9 +129,39 @@ class AppWorldRunConfig:
     appworld_root: Path | None = None
     task_limit: int | None = None
     task_offset: int = 0
+    runtime_config: dict[str, Any] = field(default_factory=dict)
 
     def artifact_root(self) -> Path:
         return self.output_root.resolve() / self.experiment_name
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dataset_name": self.dataset_name,
+            "task_ids": list(self.task_ids),
+            "task_paths": list(self.task_paths),
+            "experiment_name": self.experiment_name,
+            "output_root": str(self.output_root),
+            "skills_root": str(self.skills_root) if self.skills_root is not None else None,
+            "user_skills_root": (
+                str(self.user_skills_root) if self.user_skills_root is not None else None
+            ),
+            "workspace_root": (
+                str(self.workspace_root) if self.workspace_root is not None else None
+            ),
+            "max_iterations": self.max_iterations,
+            "concise_trace": self.concise_trace,
+            "use_mcp_tools": self.use_mcp_tools,
+            "appworld_mcp_url": self.appworld_mcp_url,
+            "appworld_mcp_command": list(self.appworld_mcp_command),
+            "mcp_timeout_ms": self.mcp_timeout_ms,
+            "remote_apis_url": self.remote_apis_url,
+            "remote_environment_url": self.remote_environment_url,
+            "remote_docker_url": self.remote_docker_url,
+            "appworld_root": str(self.appworld_root) if self.appworld_root is not None else None,
+            "task_limit": self.task_limit,
+            "task_offset": self.task_offset,
+            "runtime_config": dict(self.runtime_config),
+        }
 
 
 @dataclass(frozen=True)
@@ -233,6 +298,15 @@ def run_appworld_tasks(
         combined_trace = _CombinedTraceRecorder(trace, concise_trace)
 
         combined_trace.emit("run_start", {"task": task_input, "evaluate": evaluate})
+        run_config_payload = {
+            "environment": "appworld",
+            "evaluate": evaluate,
+            "task": dict(task_input),
+            "config": config.to_dict(),
+        }
+        combined_trace.emit("run_config", run_config_payload)
+        _write_json(artifact_dir / "config.json", run_config_payload)
+        LOGGER.info("AppWorld Run Config:\n%s", json.dumps(run_config_payload, indent=2, sort_keys=True))
 
         registry = ToolsRegistry(
             skills_root=config.skills_root,
@@ -276,8 +350,18 @@ def run_appworld_tasks(
             success = True
         except Exception as exc:
             error_text = str(exc)
-            combined_trace.emit("task_error", {"error": error_text})
-            _write_text(artifact_dir / "error.txt", error_text)
+            error_traceback = traceback.format_exc()
+            combined_trace.emit(
+                "task_error",
+                {
+                    "error": error_text,
+                    "traceback": error_traceback,
+                },
+            )
+            _write_text(
+                artifact_dir / "error.txt",
+                f"{error_text}\n\nTraceback:\n{error_traceback}",
+            )
         finally:
             try:
                 registry.detach_environment()

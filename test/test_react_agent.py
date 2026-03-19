@@ -10,6 +10,40 @@ from leo.tools.registry import ToolsRegistry
 from test.fakes import FakeLLM, FakeToolCall
 
 
+def structured_turn(
+    *,
+    thought: str,
+    content: str | None = None,
+    code: str | None = None,
+    tool_calls: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "content": json.dumps(
+            {
+                "thought": thought,
+                "content": content,
+                "code": code,
+                "tool_calls": tool_calls or [],
+            }
+        ),
+        "tool_calls": [],
+    }
+
+
+def write_basic_skill(root: Path, *, name: str, description: str) -> None:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: {description}
+---
+Use this skill when the task clearly matches {name}.
+""",
+        encoding="utf-8",
+    )
+
+
 def test_react_agent_executes_all_tool_calls_in_a_step_and_extracts_final_answer() -> None:
     called: list[tuple[str, str]] = []
 
@@ -41,14 +75,20 @@ def test_react_agent_executes_all_tool_calls_in_a_step_and_extracts_final_answer
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Thought: need data",
-                "tool_calls": [
-                    FakeToolCall("call-1", "lookup", json.dumps({"query": "a"})),
-                    FakeToolCall("call-2", "other", "{}"),
+            structured_turn(
+                thought="need data",
+                content="Inspecting tool results.",
+                tool_calls=[
+                    {"name": "lookup", "arguments": {"query": "a"}},
+                    {"name": "other", "arguments": {}},
                 ],
-            },
-            {"content": "Final Answer: done"},
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -63,23 +103,20 @@ def test_react_agent_returns_structured_final_answer_tool_payload() -> None:
     registry = ToolsRegistry()
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final",
-                        "final_answer",
-                        json.dumps(
-                            {
-                                "answer": (
-                                    "**Monta Vista-Lynbrook Winter Guard Recap**\n"
-                                    "The February 28, 2026 event showcased strong performances."
-                                )
-                            }
-                        ),
-                    )
+            structured_turn(
+                thought="finalize recap",
+                tool_calls=[
+                    {
+                        "name": "final_answer",
+                        "arguments": {
+                            "answer": (
+                                "**Monta Vista-Lynbrook Winter Guard Recap**\n"
+                                "The February 28, 2026 event showcased strong performances."
+                            )
+                        },
+                    }
                 ],
-            }
+            )
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -96,16 +133,12 @@ def test_react_agent_accepts_numeric_final_answer_tool_payload() -> None:
     registry = ToolsRegistry()
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final-number",
-                        "final_answer",
-                        json.dumps({"answer": 11}),
-                    )
+            structured_turn(
+                thought="return numeric answer",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": 11}},
                 ],
-            }
+            )
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -132,12 +165,12 @@ def test_react_agent_accepts_tool_requested_auto_final_answer() -> None:
     )
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall("call-complete", "complete_task", "{}"),
+            structured_turn(
+                thought="complete the task",
+                tool_calls=[
+                    {"name": "complete_task", "arguments": {}},
                 ],
-            }
+            )
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -168,39 +201,37 @@ def test_react_agent_session_persists_structured_final_answer_for_follow_ups() -
             super().__init__(responses)
             self.calls: list[list[dict[str, object]]] = []
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.calls.append(json.loads(json.dumps(messages)))
-            return super().complete(messages=messages, tools=tools)
+            return super().complete(messages=messages, tools=tools, **kwargs)
 
     llm = RecordingLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final-1",
-                        "final_answer",
-                        json.dumps(
-                            {
-                                "answer": (
-                                    "**Recap**\n"
-                                    "The program name used here is Monta Vista-Lynbrook Winter Guard."
-                                )
-                            }
-                        ),
-                    )
+            structured_turn(
+                thought="deliver first recap",
+                tool_calls=[
+                    {
+                        "name": "final_answer",
+                        "arguments": {
+                            "answer": (
+                                "**Recap**\n"
+                                "The program name used here is Monta Vista-Lynbrook Winter Guard."
+                            )
+                        },
+                    }
                 ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final-2",
-                        "final_answer",
-                        json.dumps({"answer": "It came from the event title in the source material."}),
-                    )
+            ),
+            structured_turn(
+                thought="answer follow-up",
+                tool_calls=[
+                    {
+                        "name": "final_answer",
+                        "arguments": {
+                            "answer": "It came from the event title in the source material."
+                        },
+                    }
                 ],
-            },
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=ToolsRegistry())
@@ -243,18 +274,19 @@ def test_react_agent_logs_full_concise_turn_output(caplog: pytest.LogCaptureFixt
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Thought: inspect data first.",
-                "tool_calls": [
-                    FakeToolCall("call-1", "lookup", json.dumps({"query": "full query text"})),
+            structured_turn(
+                thought="inspect data first.",
+                content="Checking lookup output.",
+                tool_calls=[
+                    {"name": "lookup", "arguments": {"query": "full query text"}},
                 ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall("call-final", "final_answer", json.dumps({"answer": "done"})),
+            ),
+            structured_turn(
+                thought="return result",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
                 ],
-            },
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -269,7 +301,7 @@ def test_react_agent_logs_full_concise_turn_output(caplog: pytest.LogCaptureFixt
     assert "Initial Assistant Prompt:\n-" in rendered
     assert "Initial User Prompt:\nSolve the task completely." in rendered
     assert "Turn 1" in rendered
-    assert "LLM:\nThought: inspect data first." in rendered
+    assert '"thought": "inspect data first."' in rendered
     assert 'Tool Call:\nlookup' in rendered
     assert '"query": "full query text"' in rendered
     assert "Result:\nline one\nline two" in rendered
@@ -295,22 +327,22 @@ def test_react_agent_logs_code_arguments_as_multiline_code(
     )
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-1",
-                        "execute_appworld_code",
-                        json.dumps({"code": "x = 1\nprint(x)"}),
-                    )
+            structured_turn(
+                thought="run the snippet",
+                code="x = 1\nprint(x)",
+                tool_calls=[
+                    {
+                        "name": "execute_appworld_code",
+                        "arguments": {"code": "x = 1\nprint(x)"},
+                    }
                 ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall("call-final", "final_answer", json.dumps({"answer": "done"})),
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
                 ],
-            },
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -342,13 +374,24 @@ def test_react_agent_stops_repeated_same_action() -> None:
         handler=lookup,
     )
 
-    repeated_call = FakeToolCall("call-r", "lookup", json.dumps({"query": "same"}))
     llm = FakeLLM(
         responses=[
-            {"content": "Thought 1", "tool_calls": [repeated_call]},
-            {"content": "Thought 2", "tool_calls": [FakeToolCall("call-r2", "lookup", json.dumps({"query": "same"}))]},
-            {"content": "Thought 3", "tool_calls": [FakeToolCall("call-r3", "lookup", json.dumps({"query": "same"}))]},
-            {"content": "Final Answer: fallback"},
+            structured_turn(
+                thought="first lookup",
+                tool_calls=[{"name": "lookup", "arguments": {"query": "same"}}],
+            ),
+            structured_turn(
+                thought="second lookup",
+                tool_calls=[{"name": "lookup", "arguments": {"query": "same"}}],
+            ),
+            structured_turn(
+                thought="third lookup",
+                tool_calls=[{"name": "lookup", "arguments": {"query": "same"}}],
+            ),
+            structured_turn(
+                thought="fallback",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "fallback"}}],
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -381,19 +424,22 @@ def test_react_agent_does_not_treat_different_args_as_repeat() -> None:
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Need first search.",
-                "tool_calls": [
-                    FakeToolCall("call-1", "web_search", json.dumps({"query": "openai news"}))
+            structured_turn(
+                thought="need first search",
+                tool_calls=[
+                    {"name": "web_search", "arguments": {"query": "openai news"}}
                 ],
-            },
-            {
-                "content": "Need second search with different args.",
-                "tool_calls": [
-                    FakeToolCall("call-2", "web_search", json.dumps({"query": "anthropic news"}))
+            ),
+            structured_turn(
+                thought="need second search with different args",
+                tool_calls=[
+                    {"name": "web_search", "arguments": {"query": "anthropic news"}}
                 ],
-            },
-            {"content": "Final Answer: done"},
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "done"}}],
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -410,27 +456,22 @@ def test_react_agent_activates_web_search_skill_and_uses_contributed_tool() -> N
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Need a skill for web data.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-1",
-                        "activate_skill",
-                        json.dumps({"skill_name": "web_search"}),
-                    )
+            structured_turn(
+                thought="need a skill for web data",
+                tool_calls=[
+                    {"name": "activate_skill", "arguments": {"skill_name": "web_search"}}
                 ],
-            },
-            {
-                "content": "Now run web search.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-2",
-                        "web_search",
-                        json.dumps({"query": "leo framework"}),
-                    )
+            ),
+            structured_turn(
+                thought="now run web search",
+                tool_calls=[
+                    {"name": "web_search", "arguments": {"query": "leo framework"}}
                 ],
-            },
-            {"content": "Final Answer: done"},
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "done"}}],
+            ),
         ]
     )
 
@@ -448,27 +489,25 @@ def test_react_agent_can_load_bundled_resource_from_activated_skill() -> None:
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Need the PDF skill.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-1",
-                        "activate_skill",
-                        json.dumps({"skill_name": "pdf"}),
-                    )
+            structured_turn(
+                thought="need the pdf skill",
+                tool_calls=[
+                    {"name": "activate_skill", "arguments": {"skill_name": "pdf"}}
                 ],
-            },
-            {
-                "content": "Need the form-specific guide.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-2",
-                        "get_skill_resource",
-                        json.dumps({"skill_name": "pdf", "resource_path": "forms.md"}),
-                    )
+            ),
+            structured_turn(
+                thought="need the form-specific guide",
+                tool_calls=[
+                    {
+                        "name": "get_skill_resource",
+                        "arguments": {"skill_name": "pdf", "resource_path": "forms.md"},
+                    }
                 ],
-            },
-            {"content": "Final Answer: loaded"},
+            ),
+            structured_turn(
+                thought="loaded",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "loaded"}}],
+            ),
         ]
     )
 
@@ -479,29 +518,27 @@ def test_react_agent_can_load_bundled_resource_from_activated_skill() -> None:
     assert result == "loaded"
 
 
-def test_react_agent_auto_activates_pdf_skill_from_user_path() -> None:
+def test_react_agent_auto_activates_pdf_skill_from_user_path(tmp_path: Path) -> None:
     class RecordingLLM(FakeLLM):
         def __init__(self, responses: list[dict[str, object]]):
             super().__init__(responses)
             self.calls: list[list[dict[str, object]]] = []
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.calls.append(json.loads(json.dumps(messages)))
-            return super().complete(messages=messages, tools=tools)
+            return super().complete(messages=messages, tools=tools, **kwargs)
 
-    registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
+    skills_root = tmp_path / ".agents" / "skills"
+    write_basic_skill(skills_root, name="pdf", description="Handle PDF files.")
+    registry = ToolsRegistry(skills_root=skills_root)
     llm = RecordingLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final",
-                        "final_answer",
-                        json.dumps({"answer": "done"}),
-                    )
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
                 ],
-            }
+            )
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -524,44 +561,36 @@ def test_react_agent_can_list_and_run_skill_command() -> None:
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Need the CI skill.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-1",
-                        "activate_skill",
-                        json.dumps({"skill_name": "gh-fix-ci"}),
-                    )
+            structured_turn(
+                thought="need the ci skill",
+                tool_calls=[
+                    {"name": "activate_skill", "arguments": {"skill_name": "gh-fix-ci"}}
                 ],
-            },
-            {
-                "content": "Inspect commands first.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-2",
-                        "list_skill_commands",
-                        json.dumps({"skill_name": "gh-fix-ci"}),
-                    )
+            ),
+            structured_turn(
+                thought="inspect commands first",
+                tool_calls=[
+                    {"name": "list_skill_commands", "arguments": {"skill_name": "gh-fix-ci"}}
                 ],
-            },
-            {
-                "content": "Run the help command.",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-3",
-                        "run_skill_command",
-                        json.dumps(
-                            {
-                                "skill_name": "gh-fix-ci",
-                                "command_name": "inspect_pr_checks",
-                                "args": ["--help"],
-                                "timeout_ms": 10000,
-                            }
-                        ),
-                    )
+            ),
+            structured_turn(
+                thought="run the help command",
+                tool_calls=[
+                    {
+                        "name": "run_skill_command",
+                        "arguments": {
+                            "skill_name": "gh-fix-ci",
+                            "command_name": "inspect_pr_checks",
+                            "args": ["--help"],
+                            "timeout_ms": 10000,
+                        },
+                    }
                 ],
-            },
-            {"content": "Final Answer: command ran"},
+            ),
+            structured_turn(
+                thought="command ran",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "command ran"}}],
+            ),
         ]
     )
 
@@ -590,13 +619,16 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
 
     llm = FakeLLM(
         responses=[
-            {
-                "content": "Thought: need data",
-                "tool_calls": [
-                    FakeToolCall("call-1", "lookup", json.dumps({"query": "a"})),
+            structured_turn(
+                thought="need data",
+                tool_calls=[
+                    {"name": "lookup", "arguments": {"query": "a"}},
                 ],
-            },
-            {"content": "Final Answer: done"},
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[{"name": "final_answer", "arguments": {"answer": "done"}}],
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -610,7 +642,7 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
     assert any(
         "Turn 1: model responded" in message
         and "tool_calls=1" in message
-        and "content=Thought: need data" in message
+        and '"thought": "need data"' in message
         for message in messages
     )
     assert any(message == "Turn 1: tool plan=lookup" for message in messages)
@@ -621,12 +653,12 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
         for message in messages
     )
     assert any(
-        "Turn 1: tool completed id=call-1 name=lookup" in message
+        "Turn 1: tool completed id=structured-call-1-1 name=lookup" in message
         and "result=obs:a" in message
         for message in messages
     )
     assert any(
-        "Turn 2: final answer detected from text preview=done" in message
+        "Turn 2: final answer tool received preview=done" in message
         for message in messages
     )
     assert any(
@@ -638,16 +670,12 @@ def test_react_agent_logs_structured_final_answer_tool(caplog: pytest.LogCapture
     registry = ToolsRegistry()
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final",
-                        "final_answer",
-                        json.dumps({"answer": "Draft body here."}),
-                    )
+            structured_turn(
+                thought="finalize draft",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "Draft body here."}},
                 ],
-            }
+            )
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
@@ -670,14 +698,116 @@ def test_react_agent_retries_after_empty_non_tool_response() -> None:
     llm = FakeLLM(
         responses=[
             {
-                "content": "",
+                "content": "{}",
                 "tool_calls": [],
             },
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=1)
+
+    assert result == "done"
+
+
+def test_react_agent_accepts_null_final_answer_for_mutation_tasks() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            structured_turn(
+                thought="mutation complete",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": None}},
+                ],
+            )
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("mutate state", max_iterations=2)
+
+    assert result is None
+
+
+def test_react_agent_retries_after_invalid_structured_response() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
             {
-                "content": "",
+                "content": json.dumps(
+                    {
+                        "content": "missing thought",
+                        "code": None,
+                        "tool_calls": [],
+                    }
+                ),
+                "tool_calls": [],
+            },
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=3)
+
+    assert result == "missing thought"
+
+
+def test_react_agent_extracts_embedded_json_object() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": (
+                    'Sure, here is the response:\n'
+                    '{"thought":"done","content":"wrapped","code":null,'
+                    '"tool_calls":[{"name":"final_answer","arguments":{"answer":"done"}}]}'
+                ),
+                "tool_calls": [],
+            }
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=2)
+
+    assert result == "done"
+
+
+def test_react_agent_accepts_native_tool_calls_with_empty_content() -> None:
+    registry = ToolsRegistry()
+    registry.register_tool(
+        name="lookup",
+        description="Lookup data.",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=lambda query: f"obs:{query}",
+    )
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": None,
                 "tool_calls": [
                     FakeToolCall(
-                        "call-final",
+                        "call_1",
+                        "lookup",
+                        json.dumps({"query": "a"}),
+                    )
+                ],
+            },
+            {
+                "content": None,
+                "tool_calls": [
+                    FakeToolCall(
+                        "call_2",
                         "final_answer",
                         json.dumps({"answer": "done"}),
                     )
@@ -692,24 +822,26 @@ def test_react_agent_retries_after_empty_non_tool_response() -> None:
     assert result == "done"
 
 
-def test_react_agent_accepts_null_final_answer_for_mutation_tasks() -> None:
+def test_react_agent_recovers_from_all_null_placeholder_within_same_turn() -> None:
     registry = ToolsRegistry()
     llm = FakeLLM(
         responses=[
-            {
-                "content": "",
-                "tool_calls": [
-                    FakeToolCall(
-                        "call-final",
-                        "final_answer",
-                        json.dumps({"answer": None}),
-                    )
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
                 ],
-            }
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
 
-    result = agent.run("mutate state", max_iterations=2)
+    result = agent.run("do thing", max_iterations=1)
 
-    assert result is None
+    assert result == "done"

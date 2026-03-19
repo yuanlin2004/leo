@@ -1,7 +1,10 @@
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..core.logging_utils import CONCISE_LEVEL, TRACE_LEVEL
 from ..core.llm import LeoLLMClient, LeoLLMException
@@ -29,7 +32,54 @@ Rules:
 - If an activated skill mentions companion guides, scripts, or reference files, load them with get_skill_resource instead of guessing.
 - If a skill workflow depends on binaries, MCP servers, auth, or environment variables, inspect get_skill_requirements before proceeding.
 - If an activated skill exposes runnable commands, inspect them with list_skill_commands and execute them with run_skill_command.
+- Return every assistant turn as a single JSON object with the fields `thought`, `content`, `code`, and `tool_calls`.
+- Always include `thought`. Keep it short, practical, and safe to expose in logs.
+- Use `content` for a short status/update, `code` for any relevant code snippet, and `tool_calls` for every tool invocation.
+- When you are done, emit exactly one `tool_calls` entry for `final_answer` with the complete user-facing answer in `arguments.answer`.
+- If a field is not needed, use `null` for `content` or `code`, and use `[]` for `tool_calls`.
+- Example:
+  {"thought":"Need to inspect the API.","content":"Listing available endpoints.","code":null,"tool_calls":[{"name":"list_appworld_apis","arguments":{"app_name":"spotify"}}]}
+- Do not output markdown fences or any text outside that JSON object.
 """
+
+
+class ReActStructuredToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReActStructuredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thought: str = Field(min_length=1)
+    content: str | None = None
+    code: str | None = None
+    tool_calls: list[ReActStructuredToolCall] = Field(default_factory=list)
+
+
+@dataclass
+class _StructuredFunctionCall:
+    name: str
+    arguments: str
+
+
+@dataclass
+class _StructuredToolCall:
+    id: str
+    function: _StructuredFunctionCall
+    type: str = "function"
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "function": {
+                "name": self.function.name,
+                "arguments": self.function.arguments,
+            },
+        }
 
 
 class ReActAgent(Agent):
@@ -38,8 +88,11 @@ class ReActAgent(Agent):
     """
 
     _MAX_REPEAT_ACTIONS = 2
+    _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 3
     _MAX_LOG_PREVIEW_CHARS = 200
     _FINAL_ANSWER_TOOL_NAME = "final_answer"
+    _STRUCTURED_RESPONSE_FORMAT_NAME = "react_agent_turn"
+    _STRUCTURED_RESPONSE_FALLBACK_THOUGHT = "Continuing with the task."
     _FINAL_ANSWER_TOOL_SCHEMA = {
         "type": "function",
         "function": {
@@ -205,8 +258,21 @@ class ReActAgent(Agent):
         conversation: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         runtime_messages = self.tools_registry.get_runtime_context_messages()
+        tool_schema_message = {
+            "role": "system",
+            "content": self._build_tool_schema_prompt(),
+        }
         if not runtime_messages:
-            return conversation
+            if not conversation:
+                return [
+                    {"role": "system", "content": self.system_prompt},
+                    tool_schema_message,
+                ]
+            return [
+                conversation[0],
+                tool_schema_message,
+                *conversation[1:],
+            ]
         system_message = (
             conversation[0]
             if conversation
@@ -215,9 +281,252 @@ class ReActAgent(Agent):
         remainder = conversation[1:] if conversation else []
         return [
             system_message,
+            tool_schema_message,
             *runtime_messages,
             *remainder,
         ]
+
+    @classmethod
+    def _build_structured_response_format(cls) -> dict[str, Any]:
+        schema = ReActStructuredResponse.model_json_schema()
+        schema["additionalProperties"] = False
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": cls._STRUCTURED_RESPONSE_FORMAT_NAME,
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
+    def _build_tool_schema_prompt(self) -> str:
+        tool_schemas = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
+        return (
+            "Tool schemas are provided below. Use them to populate `tool_calls` exactly. "
+            "Each `tool_calls` item must contain `name` and an object `arguments`.\n"
+            f"{json.dumps(tool_schemas, indent=2, sort_keys=True)}"
+        )
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        stripped = text.strip()
+        if not stripped.startswith("```"):
+            return stripped
+        lines = stripped.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+        return stripped
+
+    @classmethod
+    def _extract_json_payload(cls, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    @staticmethod
+    def _coerce_tool_call_arguments(raw_arguments: Any) -> dict[str, Any]:
+        if raw_arguments is None:
+            return {}
+        if isinstance(raw_arguments, dict):
+            return raw_arguments
+        if isinstance(raw_arguments, str):
+            stripped = raw_arguments.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                return parsed
+        raise ValueError("Tool arguments must decode to a JSON object.")
+
+    @classmethod
+    def _coerce_tool_call_item(cls, raw_tool_call: Any) -> dict[str, Any]:
+        if not isinstance(raw_tool_call, dict):
+            raise ValueError("Tool call entries must be objects.")
+        if isinstance(raw_tool_call.get("name"), str):
+            return {
+                "name": raw_tool_call["name"],
+                "arguments": cls._coerce_tool_call_arguments(
+                    raw_tool_call.get("arguments")
+                ),
+            }
+        function_payload = raw_tool_call.get("function")
+        if not isinstance(function_payload, dict):
+            raise ValueError("Tool call entries must contain `name` or `function.name`.")
+        name = function_payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Tool call function name must be a non-empty string.")
+        return {
+            "name": name,
+            "arguments": cls._coerce_tool_call_arguments(
+                function_payload.get("arguments")
+            ),
+        }
+
+    @classmethod
+    def _normalize_structured_payload(
+        cls,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_tool_calls = payload.get("tool_calls", [])
+        if raw_tool_calls is None:
+            raw_tool_calls = []
+        if not isinstance(raw_tool_calls, list):
+            raise ValueError("`tool_calls` must be a list.")
+        thought = payload.get("thought")
+        if not isinstance(thought, str) or not thought.strip():
+            thought = cls._STRUCTURED_RESPONSE_FALLBACK_THOUGHT
+        content = payload.get("content")
+        code = payload.get("code")
+        return {
+            "thought": thought.strip(),
+            "content": None if content is None else str(content),
+            "code": None if code is None else str(code),
+            "tool_calls": [
+                cls._coerce_tool_call_item(item) for item in raw_tool_calls
+            ],
+        }
+
+    @classmethod
+    def _build_structured_response_from_native_tool_calls(
+        cls,
+        assistant_message: Any,
+        raw_content: str | None,
+    ) -> ReActStructuredResponse | None:
+        native_tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        if not native_tool_calls:
+            return None
+        payload = {
+            "thought": cls._STRUCTURED_RESPONSE_FALLBACK_THOUGHT,
+            "content": cls._strip_code_fences(raw_content or "") or None,
+            "code": None,
+            "tool_calls": [
+                tool_call.model_dump() if hasattr(tool_call, "model_dump") else tool_call
+                for tool_call in native_tool_calls
+            ],
+        }
+        try:
+            return ReActStructuredResponse.model_validate(
+                cls._normalize_structured_payload(payload)
+            )
+        except ValidationError as exc:
+            raise ValueError(
+                f"Native tool call response validation failed: {exc}"
+            ) from exc
+
+    @classmethod
+    def _parse_structured_response(
+        cls,
+        raw_content: str | None,
+        assistant_message: Any | None = None,
+    ) -> ReActStructuredResponse:
+        text = cls._strip_code_fences(raw_content or "")
+        payload = cls._extract_json_payload(text)
+        if payload is not None:
+            try:
+                return ReActStructuredResponse.model_validate(
+                    cls._normalize_structured_payload(payload)
+                )
+            except ValidationError as exc:
+                raise ValueError(f"Structured response validation failed: {exc}") from exc
+        if assistant_message is not None:
+            native_tool_response = cls._build_structured_response_from_native_tool_calls(
+                assistant_message,
+                raw_content,
+            )
+            if native_tool_response is not None:
+                return native_tool_response
+        if not text:
+            raise ValueError("Structured response was empty.")
+        raise ValueError("Structured response was not valid JSON: no JSON object found.")
+
+    @classmethod
+    def _render_structured_response(cls, response: ReActStructuredResponse) -> str:
+        return json.dumps(response.model_dump(exclude_none=False), indent=2, sort_keys=True)
+
+    @staticmethod
+    def _build_structured_retry_message(error: Exception) -> str:
+        return (
+            "Your previous response did not match the required JSON schema. "
+            "Return exactly one JSON object with keys `thought`, `content`, `code`, and `tool_calls`. "
+            "Use null for unused `content` or `code`, and [] for no tool calls. "
+            "Do not return an all-null placeholder object; make one concrete tool call or emit final_answer. "
+            f"Validation error: {error}"
+        )
+
+    @staticmethod
+    def _is_blank_text(value: str | None) -> bool:
+        return value is None or not value.strip()
+
+    @classmethod
+    def _is_effectively_empty_structured_response(
+        cls,
+        response: ReActStructuredResponse,
+    ) -> bool:
+        return (
+            not response.tool_calls
+            and cls._is_blank_text(response.content)
+            and cls._is_blank_text(response.code)
+        )
+
+    @classmethod
+    def _build_structured_tool_calls(
+        cls,
+        response: ReActStructuredResponse,
+        turn_number: int,
+    ) -> list[_StructuredToolCall]:
+        tool_calls: list[_StructuredToolCall] = []
+        for index, tool_call in enumerate(response.tool_calls, start=1):
+            tool_calls.append(
+                _StructuredToolCall(
+                    id=f"structured-call-{turn_number}-{index}",
+                    function=_StructuredFunctionCall(
+                        name=tool_call.name,
+                        arguments=json.dumps(
+                            tool_call.arguments,
+                            sort_keys=True,
+                            ensure_ascii=True,
+                        ),
+                    ),
+                )
+            )
+        return tool_calls
+
+    def _complete_structured_turn(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> tuple[Any, str]:
+        tool_schemas = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
+        request_kwargs = {"response_format": self._build_structured_response_format()}
+        try:
+            assistant_message = self.llm.complete(
+                messages=messages,
+                tools=tool_schemas,
+                **request_kwargs,
+            )
+            return assistant_message, assistant_message.content or ""
+        except LeoLLMException as exc:
+            LOGGER.warning(
+                "Structured response_format request failed; retrying without response_format. error=%s",
+                exc,
+            )
+        assistant_message = self.llm.complete(messages=messages, tools=tool_schemas)
+        return assistant_message, assistant_message.content or ""
 
     @staticmethod
     def _render_concise_value(value: Any) -> str:
@@ -378,7 +687,6 @@ class ReActAgent(Agent):
         for iteration in range(max_iterations):
             turn_number = iteration + 1
             LOGGER.info("Turn %d: calling model", turn_number)
-            tools = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
             model_messages = self._build_model_messages(conversation)
             if turn_number == 1:
                 self._log_concise_initial_prompts(model_messages)
@@ -402,17 +710,76 @@ class ReActAgent(Agent):
                 turn_number,
                 json.dumps(model_messages, indent=2, default=str),
             )
-            llm_start = time.perf_counter()
-            assistant_message = self.llm.complete(messages=model_messages, tools=tools)
-            llm_elapsed_ms = (time.perf_counter() - llm_start) * 1000
-            tool_calls = assistant_message.tool_calls or []
-            assistant_content = assistant_message.content or ""
+            attempt_messages = list(model_messages)
+            assistant_message = None
+            raw_response_content = ""
+            llm_elapsed_ms = 0.0
+            structured_response: ReActStructuredResponse | None = None
+            last_error: Exception | None = None
+            for attempt_number in range(1, self._MAX_STRUCTURED_RESPONSE_ATTEMPTS + 1):
+                llm_start = time.perf_counter()
+                assistant_message, raw_response_content = self._complete_structured_turn(
+                    attempt_messages
+                )
+                llm_elapsed_ms = (time.perf_counter() - llm_start) * 1000
+                try:
+                    candidate_response = self._parse_structured_response(
+                        raw_response_content,
+                        assistant_message=assistant_message,
+                    )
+                    if self._is_effectively_empty_structured_response(candidate_response):
+                        raise ValueError(
+                            "Structured response was empty: content, code, and tool_calls were all empty."
+                        )
+                except ValueError as exc:
+                    last_error = exc
+                    LOGGER.warning(
+                        "Turn %d attempt %d: structured response validation failed: %s",
+                        turn_number,
+                        attempt_number,
+                        exc,
+                    )
+                    if attempt_number == self._MAX_STRUCTURED_RESPONSE_ATTEMPTS:
+                        break
+                    attempt_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": raw_response_content,
+                        }
+                    )
+                    attempt_messages.append(
+                        {
+                            "role": "user",
+                            "content": self._build_structured_retry_message(exc),
+                        }
+                    )
+                    continue
+                structured_response = candidate_response
+                break
+            if structured_response is None:
+                assert last_error is not None
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": raw_response_content,
+                    }
+                )
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": self._build_structured_retry_message(last_error),
+                    }
+                )
+                continue
+            tool_calls = self._build_structured_tool_calls(structured_response, turn_number)
+            assistant_content = structured_response.content or ""
+            rendered_response = self._render_structured_response(structured_response)
             LOGGER.info(
                 "Turn %d: model responded latency_ms=%.1f tool_calls=%d content=%s",
                 turn_number,
                 llm_elapsed_ms,
                 len(tool_calls),
-                self._preview_text(assistant_content),
+                self._preview_text(rendered_response),
             )
             LOGGER.debug(
                 "Turn %d: llm_latency_ms=%.1f tool_calls=%d",
@@ -423,9 +790,9 @@ class ReActAgent(Agent):
             LOGGER.debug(
                 "[assistant turn %d] %s",
                 turn_number,
-                self._preview_text(assistant_content),
+                self._preview_text(rendered_response),
             )
-            self._log_concise_llm_response(assistant_content)
+            self._log_concise_llm_response(rendered_response)
             if tool_calls:
                 LOGGER.info(
                     "Turn %d: tool plan=%s",
@@ -441,22 +808,12 @@ class ReActAgent(Agent):
                 assistant_message.model_dump()
                 if hasattr(assistant_message, "model_dump")
                 else {
-                    "content": assistant_content,
-                    "tool_calls": [
-                        tool_call.model_dump()
-                        if hasattr(tool_call, "model_dump")
-                        else {
-                            "id": getattr(tool_call, "id", None),
-                            "name": getattr(
-                                getattr(tool_call, "function", None), "name", None
-                            ),
-                            "arguments": getattr(
-                                getattr(tool_call, "function", None), "arguments", None
-                            ),
-                        }
-                        for tool_call in tool_calls
-                    ],
+                    "content": raw_response_content,
+                    "tool_calls": [],
                 }
+            )
+            response_payload["structured_response"] = structured_response.model_dump(
+                exclude_none=False
             )
             LOGGER.log(
                 TRACE_LEVEL,
@@ -472,7 +829,7 @@ class ReActAgent(Agent):
                 conversation.append(
                     {
                         "role": "assistant",
-                        "content": assistant_content,
+                        "content": rendered_response,
                         "tool_calls": [tool_calls[0].model_dump()],
                     }
                 )
@@ -499,7 +856,7 @@ class ReActAgent(Agent):
                 return final_answer
 
             if not tool_calls:
-                conversation.append({"role": "assistant", "content": assistant_content})
+                conversation.append({"role": "assistant", "content": rendered_response})
                 final_answer = self._extract_final_answer(assistant_content)
                 if final_answer:
                     LOGGER.info(
@@ -526,19 +883,19 @@ class ReActAgent(Agent):
                 LOGGER.info(
                     "Turn %d: returning assistant content preview=%s",
                     turn_number,
-                    self._preview_text(assistant_content),
+                    self._preview_text(assistant_content or (structured_response.code or "")),
                 )
                 LOGGER.info("Returning assistant content after %d turns.", turn_number)
                 LOGGER.debug(
                     "Assistant content preview: %s",
-                    self._preview_text(assistant_content),
+                    self._preview_text(assistant_content or (structured_response.code or "")),
                 )
-                return assistant_content
+                return assistant_content or (structured_response.code or "")
 
             conversation.append(
                 {
                     "role": "assistant",
-                    "content": assistant_content,
+                    "content": rendered_response,
                     "tool_calls": [tool_call.model_dump() for tool_call in tool_calls],
                 }
             )

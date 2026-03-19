@@ -84,6 +84,9 @@ class ConciseTraceRecorder:
             return
         if event_type == "task_error":
             self._append_block("Error", _render_value(normalized.get("error")))
+            return
+        if event_type == "run_config":
+            self._append_block("Run Config", normalized)
 
     def _handle_model_request(self, payload: dict[str, Any]) -> None:
         messages = payload.get("messages")
