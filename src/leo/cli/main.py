@@ -96,6 +96,18 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         help="LLM temperature.",
     )
     parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=float(os.getenv("LEO_LLM_TIMEOUT", "90")),
+        help="Per-request LLM timeout in seconds.",
+    )
+    parser.add_argument(
+        "--llm-max-retries",
+        type=int,
+        default=int(os.getenv("LEO_LLM_MAX_RETRIES", "1")),
+        help="Maximum retry attempts for transient LLM request failures.",
+    )
+    parser.add_argument(
         "--log-level",
         default=os.getenv("LEO_LOG_LEVEL", "INFO"),
         help="Logging level (TRACE, DEBUG, CONCISE, INFO, WARNING, ERROR).",
@@ -188,6 +200,8 @@ def create_llm_client(args: argparse.Namespace) -> LeoLLMClient:
         model=args.model,
         provider=args.provider,
         temperature=args.temperature,
+        timeout=args.llm_timeout,
+        max_retries=args.llm_max_retries,
     )
 
 

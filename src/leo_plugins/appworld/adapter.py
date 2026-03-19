@@ -220,7 +220,8 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                 description=(
                     "Execute Python code against the live AppWorld task runtime and return the observed result. "
                     "AppWorld preloads task globals such as `apis`; inspect those instead of inventing external SDK clients. "
-                    "Use print(...) when you want a value echoed back in the tool result; the final expression is also auto-echoed when possible."
+                    "Use print(...) when you want a value echoed back in the tool result; the final expression is also auto-echoed when possible. "
+                    "Prefer short, linear snippets that reuse exact task-context values instead of long exploratory or defensive programs."
                 ),
                 parameters={
                     "type": "object",
@@ -377,7 +378,7 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
                     "snippet": executable_code,
                 },
             )
-            return _normalize_external_payload(result)
+            return _augment_execution_failure_hint(_normalize_external_payload(result))
 
         scripted = self._task_payload.get("execution_responses")
         if isinstance(scripted, Mapping):
@@ -1189,6 +1190,79 @@ def _appworld_execution_failed(result: Any) -> bool:
     if isinstance(payload, str):
         return payload.lstrip().startswith("Execution failed.")
     return False
+
+
+def _augment_execution_failure_hint(result: Any) -> Any:
+    if isinstance(result, str):
+        return _append_failure_hints(result)
+    if isinstance(result, Mapping):
+        payload = result.get("result")
+        if isinstance(payload, str):
+            updated_payload = _append_failure_hints(payload)
+            if updated_payload != payload:
+                updated = dict(result)
+                updated["result"] = updated_payload
+                return updated
+    return result
+
+
+def _looks_like_syntax_failure(value: str) -> bool:
+    text = value.lstrip()
+    return text.startswith("Execution failed.") and "Syntax error" in text
+
+
+def _append_failure_hints(value: str) -> str:
+    hints = _build_failure_hints(value)
+    if not hints:
+        return value
+    updated = value
+    for hint in hints:
+        if hint not in updated:
+            updated += f"\nHint: {hint}"
+    return updated
+
+
+def _build_failure_hints(value: str) -> list[str]:
+    hints: list[str] = []
+    if _looks_like_syntax_failure(value):
+        hints.append(
+            "rewrite the next execute_appworld_code snippet from scratch as a shorter, linear block and verify indentation and parentheses before sending it."
+        )
+    if _looks_like_unbound_app_name_error(value):
+        hints.append(
+            "AppWorld app clients live under `apis`. Use `apis.<app_name>.<api_name>(...)`, for example `apis.supervisor.show_account_passwords()`, instead of unbound names like `supervisor.show_account_passwords()`."
+        )
+    if "Unexpected parameter" in value and "Allowed parameters are:" in value:
+        hints.append(
+            "follow the exact parameter schema from describe_appworld_api. Remove undocumented arguments instead of passing guessed extras such as `access_token`."
+        )
+    if "page_limit: Input should be less than or equal to 20" in value:
+        hints.append(
+            "this endpoint caps `page_limit` at 20. Paginate with page_index/page_limit instead of requesting a larger page size."
+        )
+    if "Usage of the following function is not allowed: builtins.exit" in value:
+        hints.append(
+            "do not call `exit()` in AppWorld code. Print the answer or let the snippet finish normally."
+        )
+    return hints
+
+
+def _looks_like_unbound_app_name_error(value: str) -> bool:
+    match = re.search(r"NameError: name '([^']+)' is not defined", value)
+    if match is None:
+        return False
+    return match.group(1) in {
+        "amazon",
+        "file_system",
+        "gmail",
+        "phone",
+        "simple_note",
+        "spotify",
+        "splitwise",
+        "supervisor",
+        "todoist",
+        "venmo",
+    }
 
 
 def _safe_filename(value: str) -> str:

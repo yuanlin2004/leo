@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from leo.cli.banner import render_leo_banner
 from leo.cli.main import _format_config, create_agent, parse_args, run
+from leo.core.llm import LeoLLMClient
 
 
 class FakeToolsRegistry:
@@ -107,6 +110,8 @@ def test_parse_args_for_ask_command() -> None:
     assert args.agent == "react"
     assert args.profile == "generic"
     assert args.max_iterations == 10
+    assert args.llm_timeout == 90.0
+    assert args.llm_max_retries == 1
 
 
 def test_parse_args_uses_nemotron_as_default_model(monkeypatch) -> None:
@@ -225,6 +230,77 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
     assert captured["mcp_config_path"] is None
     assert captured["capability_profile"].name == "generic"
     assert captured["plugin_ids"] == []
+
+
+def test_create_llm_client_passes_timeout_and_retries(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class StubLLM:
+        def __init__(self, **kwargs) -> None:
+            captured["kwargs"] = kwargs
+
+    args = parse_args(
+        ["ask", "--llm-timeout", "45", "--llm-max-retries", "3", "hello"]
+    )
+
+    with patch("leo.cli.main.LeoLLMClient", StubLLM):
+        from leo.cli.main import create_llm_client
+
+        create_llm_client(args)
+
+    assert captured["kwargs"] == {
+        "model": args.model,
+        "provider": args.provider,
+        "temperature": args.temperature,
+        "timeout": 45.0,
+        "max_retries": 3,
+    }
+
+
+def test_leo_llm_client_retries_timeout_once(monkeypatch) -> None:
+    attempts = {"count": 0}
+
+    class FakeTimeoutError(Exception):
+        pass
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):  # noqa: ANN003
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise FakeTimeoutError("request timed out")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None)
+                    )
+                ]
+            )
+
+    fake_openai_module = SimpleNamespace(
+        OpenAI=FakeOpenAI,
+        APITimeoutError=FakeTimeoutError,
+    )
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
+    monkeypatch.setattr("leo.core.llm.load_project_env", lambda: None)
+    monkeypatch.setattr("leo.core.llm.time.sleep", lambda _seconds: None)
+
+    client = LeoLLMClient(
+        model="test-model",
+        provider="openrouter",
+        timeout=1.5,
+        max_retries=1,
+    )
+
+    message = client.complete(messages=[{"role": "user", "content": "hello"}])
+
+    assert message.content == "ok"
+    assert attempts["count"] == 2
 
 
 def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:

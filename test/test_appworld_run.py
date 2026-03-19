@@ -391,14 +391,23 @@ def test_run_appworld_tasks_accepts_null_final_answer(
 
 def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "`apis`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "`apis.<app_name>.<api_name>(...)`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "inventing `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Do not guess alternate usernames" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "list_appworld_apis" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "describe_appworld_api" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "first execute_appworld_code snippet should usually happen by turn 3" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "After one broad list_appworld_apis call" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "task_plan_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "write the execute_appworld_code snippet yourself" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "documented parameter list as exact" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "smallest linear snippet" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "syntax-check indentation" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "`exit()`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "maximum page_limit is 20" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
 
 
@@ -407,6 +416,10 @@ def test_build_appworld_user_prompt_adds_metric_guidance() -> None:
         {
             "task_id": "82e2fac_1",
             "instruction": "What is the title of the most-liked song in my Spotify playlists.",
+            "supervisor": {
+                "email": "joyce-weav@gmail.com",
+                "phone_number": "4436271690",
+            },
             "public_data": {
                 "library_name": "playlists",
                 "metric_adjective": "liked",
@@ -416,11 +429,81 @@ def test_build_appworld_user_prompt_adds_metric_guidance() -> None:
     )
 
     assert "Public task signals: library_name=playlists, metric_adjective=liked, most_least=most." in prompt
+    assert "Supervisor identity: email=joyce-weav@gmail.com, phone_number=4436271690." in prompt
+    assert "Use these exact supervisor identifiers for app login when relevant; do not guess alternate usernames." in prompt
     assert "Ranking rule: use the `liked` metric literally. Do not substitute a different metric." in prompt
     assert (
         "For this task, prefer explicit like metrics such as `like_count`; do not rank by `play_count`, frequency, or occurrences in playlists."
         in prompt
     )
+
+
+def test_build_appworld_user_prompt_includes_mutation_public_signals() -> None:
+    prompt = _build_appworld_user_prompt(
+        {
+            "task_id": "692c77d_1",
+            "instruction": "Give a 5-star rating to all songs in my Spotify playlists which I have liked. If I have already rated it lower, increase it to 5.",
+            "supervisor": {
+                "email": "as_moore@gmail.com",
+            },
+            "public_data": {
+                "change_type": "increase",
+                "current_rating_direction": "lower",
+                "library_name": "playlists",
+                "liked_status": "liked",
+                "target_rating": 5,
+            },
+        }
+    )
+
+    assert (
+        "Public task signals: change_type=increase, current_rating_direction=lower, library_name=playlists, liked_status=liked, target_rating=5."
+        in prompt
+    )
+    assert "Goal: Give a 5-star rating to all songs in my Spotify playlists which I have liked." in prompt
+
+
+def test_build_appworld_user_prompt_includes_initial_app_hint() -> None:
+    prompt = _build_appworld_user_prompt(
+        {
+            "task_id": "82e2fac_1",
+            "instruction": "What is the title of the most-liked song in my Spotify playlists.",
+            "public_data": {
+                "library_name": "playlists",
+                "metric_adjective": "liked",
+                "most_least": "most",
+            },
+        },
+        initial_app_hint={
+            "app_name": "spotify",
+            "auth_hint": {
+                "credential_source": {
+                    "app_name": "supervisor",
+                    "api_name": "show_account_passwords",
+                },
+                "login_api": "login",
+            },
+            "task_plan_hint": {
+                "recommended_apis": [
+                    {"app_name": "supervisor", "api_name": "show_account_passwords"},
+                    {"app_name": "spotify", "api_name": "login"},
+                    {"app_name": "spotify", "api_name": "show_playlist_library"},
+                ],
+                "answer_format_hint": "Return only the bare answer value.",
+            },
+        },
+    )
+
+    assert (
+        "Initial AppWorld hint for your next execute_appworld_code snippet: plan to call `apis.supervisor.show_account_passwords(...)`, `apis.spotify.login(...)`, `apis.spotify.show_playlist_library(...)`. These are AppWorld APIs to use inside code, not Leo tool names."
+        in prompt
+    )
+    assert (
+        "Initial auth hint inside code: use `apis.supervisor.show_account_passwords(...)` -> `apis.spotify.login(...)`."
+        in prompt
+    )
+    assert "Initial answer-format hint: Return only the bare answer value." in prompt
+    assert "Do not call list_appworld_apis unless a later tool result shows the hint is missing something important." in prompt
 
 
 def test_run_appworld_tasks_does_not_write_concise_trace_by_default(

@@ -23,11 +23,14 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nNever import external packages such as spotipy, requests, browser automation, or cloud SDKs unless they are clearly part of the AppWorld runtime."
     "\nUse short verify/fix loops."
     "\nRead the active task context carefully before acting."
+    "\nReuse exact supervisor identifiers from the task context, especially email or phone_number, when logging into apps. Do not guess alternate usernames."
     "\nThe full public task context is already injected into the prompt. Do not call get_environment_task_context at the start unless a later tool result makes you suspect the context changed or you need to re-check one specific field."
     "\nPay attention to required_apps, public_data, supervisor details, and available_apps in the task context."
     "\nStart by inspecting the task context and searching AppWorld docs for the relevant app APIs."
     "\nPrefer list_appworld_apis and describe_appworld_api to discover exact API names, required parameters, and auth requirements before writing code."
     "\nKeep discovery tight. After one broad API listing for the target app, move to describe_appworld_api for the exact APIs you plan to call or go straight to execute_appworld_code if the required parameters are already clear."
+    "\nDo not spend multiple turns enumerating APIs once task_plan_hint or auth_hint identifies the likely path. On straightforward retrieval tasks, the first execute_appworld_code snippet should usually happen by turn 3."
+    "\nAfter one broad list_appworld_apis call, use at most a small handful of targeted describe_appworld_api calls on the exact APIs you will invoke next, then write code."
     "\nIf list_appworld_apis returns task_plan_hint, treat it as the default plan unless a later tool result contradicts it. You must still write the execute_appworld_code snippet yourself."
     "\nLeo does not provide task-specific solution code for AppWorld tasks."
     "\nIf auth_hint or task_plan_hint is available, do not spend turns on broad environment exploration such as print(dir(apis)) or dumping unrelated globals. Move directly to the recommended APIs unless you still need one exact parameter name."
@@ -38,10 +41,16 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nUse execute_appworld_code for data access and computation inside the AppWorld world."
     "\nDo not use execute_python for AppWorld task solving. It runs outside the live AppWorld world and can cause you to reason over incomplete copied samples."
     "\nInside execute_appworld_code, start from the objects that AppWorld preloads for you. In particular, inspect and use `apis` rather than inventing `apps`, external SDK clients, or other globals."
+    "\nWhen writing execute_appworld_code, prefer the smallest linear snippet that can finish the task. Avoid large defensive scaffolding, nested branching, or exploratory branches unless a previous result showed a specific need."
+    "\nBefore sending execute_appworld_code, quickly syntax-check indentation, parentheses, and variable names."
+    "\nCall app APIs as `apis.<app_name>.<api_name>(...)`. Names such as `spotify` or `supervisor` are not prebound globals unless you assign them yourself."
+    "\nDo not call `exit()`, `quit()`, or `sys.exit()` inside execute_appworld_code. Print the needed value or let the snippet finish normally."
     "\nWhen inspecting values with execute_appworld_code, use print(...). If the last line is an expression, Leo will also try to echo it automatically."
     "\nPrefer targeted exploratory snippets only on the exact API you are about to call. Avoid print(dir(apis)), print(dir(apis.spotify)), or full-object dumps when the task context and task_plan_hint already identify the likely path."
     "\nTreat pagination defaults as a likely failure mode. For library or list endpoints such as show_playlist_library, show_liked_playlists, show_song_library, or search results, inspect page_index/page_limit parameters and fetch all relevant pages or request a sufficiently large page_limit before ranking or aggregating."
+    "\nIf docs show a page_limit constraint, respect it exactly. For many AppWorld list APIs the maximum page_limit is 20, so paginate instead of guessing a larger value."
     "\nIf an app API requires an access token, inspect supervisor and app auth APIs first. In many tasks, the correct path is supervisor.show_account_passwords -> app login -> reuse access_token in later calls."
+    "\nAfter describe_appworld_api, treat the documented parameter list as exact. Pass required parameters and only the optional parameters you actually need. Do not carry `access_token` into APIs whose documented parameters do not include `access_token`."
     "\nInterpret ranking words literally. If the task asks for the most-liked, highest-rated, most-played, newest, oldest, or similar metric-based entity, use the explicit metric field from the relevant entity API such as like_count, rating, play_count, or created_at. Do not infer those metrics from playlist frequency, collection membership, or appearance count unless the docs explicitly define the metric that way."
     "\nFor Spotify tasks about songs inside playlists, prefer entity APIs that expose song-level fields such as show_song when you need song like_count or other ranking metrics."
     "\nDo not assume 'my playlists' means only playlists I own. If both show_playlist_library and show_liked_playlists are available and the task wording does not restrict ownership, check both sets before deciding the answer."
@@ -59,11 +68,17 @@ APPWORLD_RUN_PROMPT_SUPPLEMENT = (
 )
 
 
-def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
+def _build_appworld_user_prompt(
+    task_context: dict[str, Any],
+    *,
+    initial_app_hint: dict[str, Any] | None = None,
+) -> str:
     instruction = str(task_context.get("instruction") or "").strip()
     task_id = str(task_context.get("task_id") or "").strip()
     public_data = task_context.get("public_data")
     public_data = public_data if isinstance(public_data, dict) else {}
+    supervisor = task_context.get("supervisor")
+    supervisor = supervisor if isinstance(supervisor, dict) else {}
     library_name = str(public_data.get("library_name") or "").strip()
     metric_adjective = str(public_data.get("metric_adjective") or "").strip().lower()
     most_least = str(public_data.get("most_least") or "").strip().lower()
@@ -77,19 +92,67 @@ def _build_appworld_user_prompt(task_context: dict[str, Any]) -> str:
         lines.append(f"Task ID: {task_id}")
     if instruction:
         lines.append(f"Goal: {instruction}")
-    if library_name or metric_adjective or most_least:
-        lines.append(
-            "Public task signals: "
-            + ", ".join(
-                part
-                for part in [
-                    f"library_name={library_name}" if library_name else "",
-                    f"metric_adjective={metric_adjective}" if metric_adjective else "",
-                    f"most_least={most_least}" if most_least else "",
-                ]
-                if part
+    supervisor_parts = [
+        f"email={supervisor['email']}" if supervisor.get("email") else "",
+        f"phone_number={supervisor['phone_number']}" if supervisor.get("phone_number") else "",
+        f"first_name={supervisor['first_name']}" if supervisor.get("first_name") else "",
+        f"last_name={supervisor['last_name']}" if supervisor.get("last_name") else "",
+    ]
+    supervisor_parts = [part for part in supervisor_parts if part]
+    if supervisor_parts:
+        lines.append("Supervisor identity: " + ", ".join(supervisor_parts) + ".")
+        if supervisor.get("email") or supervisor.get("phone_number"):
+            lines.append(
+                "Use these exact supervisor identifiers for app login when relevant; do not guess alternate usernames."
             )
-            + "."
+    public_signal_parts: list[str] = []
+    for key, raw_value in public_data.items():
+        if raw_value is None or isinstance(raw_value, (dict, list, tuple, set)):
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        public_signal_parts.append(f"{key}={value}")
+    if public_signal_parts:
+        lines.append(
+            "Public task signals: " + ", ".join(public_signal_parts) + "."
+        )
+    if initial_app_hint:
+        primary_app = str(initial_app_hint.get("app_name") or "").strip()
+        task_plan_hint = initial_app_hint.get("task_plan_hint")
+        auth_hint = initial_app_hint.get("auth_hint")
+        if isinstance(task_plan_hint, dict):
+            recommended_apis = task_plan_hint.get("recommended_apis")
+            if isinstance(recommended_apis, list):
+                api_names = [
+                    f"{item.get('app_name')}.{item.get('api_name')}"
+                    for item in recommended_apis
+                    if isinstance(item, dict)
+                    and item.get("app_name")
+                    and item.get("api_name")
+                ]
+                if api_names:
+                    lines.append(
+                        "Initial AppWorld hint for your next execute_appworld_code snippet: plan to call "
+                        + ", ".join(f"`apis.{name}(...)`" for name in api_names[:6])
+                        + ". These are AppWorld APIs to use inside code, not Leo tool names."
+                    )
+            answer_format_hint = str(task_plan_hint.get("answer_format_hint") or "").strip()
+            if answer_format_hint:
+                lines.append(f"Initial answer-format hint: {answer_format_hint}")
+        if isinstance(auth_hint, dict):
+            credential_source = auth_hint.get("credential_source")
+            login_api = str(auth_hint.get("login_api") or "").strip()
+            if isinstance(credential_source, dict):
+                credential_app = str(credential_source.get("app_name") or "").strip()
+                credential_api = str(credential_source.get("api_name") or "").strip()
+                if credential_app and credential_api and primary_app and login_api:
+                    lines.append(
+                        "Initial auth hint inside code: use "
+                        f"`apis.{credential_app}.{credential_api}(...)` -> `apis.{primary_app}.{login_api}(...)`."
+                    )
+        lines.append(
+            "Use these initial AppWorld hints as the default path. Do not call list_appworld_apis unless a later tool result shows the hint is missing something important."
         )
     if metric_adjective:
         lines.append(
@@ -331,7 +394,13 @@ def run_appworld_tasks(
                 APPWORLD_RUN_PROMPT_SUPPLEMENT,
                 combined_trace,
             )
-            prompt = _build_appworld_user_prompt(attached["context"])
+            initial_app_hint = _build_initial_app_hint(adapter, attached["context"])
+            if initial_app_hint is not None:
+                combined_trace.emit("initial_app_hint", initial_app_hint)
+            prompt = _build_appworld_user_prompt(
+                attached["context"],
+                initial_app_hint=initial_app_hint,
+            )
             final_answer = agent.run(prompt, max_iterations=config.max_iterations)
             combined_trace.emit("final_answer", {"answer": final_answer})
             saved = registry.save_environment_outputs(
@@ -447,6 +516,26 @@ def _resolve_task_inputs(config: AppWorldRunConfig) -> list[dict[str, Any]]:
     if not task_inputs:
         raise RuntimeError("No AppWorld tasks were resolved.")
     return task_inputs
+
+
+def _build_initial_app_hint(
+    adapter: AppWorldEnvironmentAdapter,
+    task_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    required_apps = task_context.get("required_apps")
+    if not isinstance(required_apps, list):
+        return None
+    for raw_app_name in required_apps:
+        app_name = str(raw_app_name or "").strip()
+        if not app_name:
+            continue
+        try:
+            payload = adapter.list_app_apis(app_name, max_results=6)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _build_adapter(

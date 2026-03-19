@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, Callable, Literal, Optional
 
 from .env import load_project_env
@@ -25,10 +26,12 @@ class LeoLLMClient:
         provider: str,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        timeout: Optional[int] = None,
+        timeout: Optional[float] = None,
+        max_retries: int = 1,
         **kwargs
     ):
         try:
+            import openai as openai_module
             from openai import OpenAI
         except ModuleNotFoundError as exc:
             raise LeoLLMException(
@@ -40,7 +43,18 @@ class LeoLLMClient:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
+        self._max_retries = max(0, int(max_retries))
         self._kwargs = kwargs
+        self._retryable_exception_types = tuple(
+            exception_type
+            for exception_type in (
+                getattr(openai_module, "APITimeoutError", None),
+                getattr(openai_module, "APIConnectionError", None),
+                getattr(openai_module, "RateLimitError", None),
+                getattr(openai_module, "InternalServerError", None),
+            )
+            if isinstance(exception_type, type)
+        )
 
         load_project_env()
 
@@ -79,24 +93,53 @@ class LeoLLMClient:
         tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> Any:
-        try:
-            request = dict(
-                model=self._model,
-                messages=messages,
-                temperature=kwargs.get("temperature", self._temperature),
-                max_tokens=kwargs.get("max_tokens", self._max_tokens),
-                **{
-                    k: v
-                    for k, v in kwargs.items()
-                    if k not in ["temperature", "max_tokens"]
-                },
-            )
-            if tools:
-                request["tools"] = tools
+        request = dict(
+            model=self._model,
+            messages=messages,
+            temperature=kwargs.get("temperature", self._temperature),
+            max_tokens=kwargs.get("max_tokens", self._max_tokens),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["temperature", "max_tokens"]
+            },
+        )
+        if tools:
+            request["tools"] = tools
 
-            response = self._client.chat.completions.create(**request)
-            return response.choices[0].message
-        except Exception as e:
-            if isinstance(e, LeoLLMException):
-                raise
-            raise LeoLLMException(f"LLM chat completion failed: {str(e)}")
+        last_error: Exception | None = None
+        for attempt_number in range(self._max_retries + 1):
+            try:
+                response = self._client.chat.completions.create(**request)
+                return response.choices[0].message
+            except Exception as exc:
+                if isinstance(exc, LeoLLMException):
+                    raise
+                last_error = exc
+                if attempt_number >= self._max_retries or not self._is_retryable_error(exc):
+                    break
+                time.sleep(min(4.0, float(2**attempt_number)))
+
+        assert last_error is not None
+        raise LeoLLMException(f"LLM chat completion failed: {str(last_error)}")
+
+    def _is_retryable_error(self, error: Exception) -> bool:
+        if isinstance(error, TimeoutError):
+            return True
+        if self._retryable_exception_types and isinstance(
+            error, self._retryable_exception_types
+        ):
+            return True
+        message = str(error).lower()
+        return any(
+            token in message
+            for token in (
+                "timeout",
+                "timed out",
+                "connection reset",
+                "temporarily unavailable",
+                "rate limit",
+                "server error",
+                "overloaded",
+            )
+        )

@@ -181,9 +181,9 @@ def test_react_agent_injects_public_environment_context_only() -> None:
             )
             self.messages: list[list[dict[str, object]]] = []
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.messages.append(json.loads(json.dumps(messages)))
-            return super().complete(messages=messages, tools=tools)
+            return super().complete(messages=messages, tools=tools, **kwargs)
 
     registry = ToolsRegistry(capability_profile="benchmark-environment")
     registry.attach_environment(
@@ -714,3 +714,88 @@ def test_execute_appworld_code_auto_prints_final_expression() -> None:
     assert result == {
         "executed_code": "print(apis.supervisor.show_account_passwords())",
     }
+
+
+def test_execute_appworld_code_adds_hint_for_syntax_failures() -> None:
+    class FakeWorld:
+        def execute(self, code: str) -> str:
+            return (
+                "Execution failed. Traceback:\n"
+                "Syntax error in line:\n"
+                "spotify_apis = apis.spotify\n"
+                "Message: expected an indented block after 'else' statement on line 11"
+            )
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-syntax-1",
+            "instruction": "Inspect an AppWorld expression.",
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._initialize_from_payload(
+        {"task_id": "aw-syntax-1", "instruction": "Inspect an AppWorld expression."}
+    )
+
+    result = adapter.execute_task_code("if True:\n    pass")
+
+    assert isinstance(result, str)
+    assert "Syntax error in line:" in result
+    assert "rewrite the next execute_appworld_code snippet from scratch as a shorter, linear block" in result
+
+
+@pytest.mark.parametrize(
+    ("failure_text", "expected_hint"),
+    [
+        (
+            "Execution failed. Traceback:\n"
+            "  File \"<python-input>\", line 1, in <module>\n"
+            "    supervisor_passwords = supervisor.show_account_passwords()\n"
+            "                           ^^^^^^^^^^\n"
+            "NameError: name 'supervisor' is not defined\n",
+            "AppWorld app clients live under `apis`.",
+        ),
+        (
+            "Execution failed. Traceback:\n"
+            "  File \"<python-input>\", line 36, in <module>\n"
+            "    song_details = apis.spotify.show_song(song_id=song_id, access_token=access_token)\n"
+            "Exception: Unexpected parameter 'access_token' passed to the show_song API of the spotify app. "
+            "Allowed parameters are: ['song_id']\n",
+            "follow the exact parameter schema from describe_appworld_api.",
+        ),
+        (
+            "Execution failed. Traceback:\n"
+            "Exception: Response status code is 422:\n"
+            "{\"message\":\"Validation error. Reason: \\npage_limit: Input should be less than or equal to 20\"}\n",
+            "this endpoint caps `page_limit` at 20.",
+        ),
+        (
+            "Execution failed. Traceback:\n"
+            "Usage of the following function is not allowed: builtins.exit.\n",
+            "do not call `exit()` in AppWorld code.",
+        ),
+    ],
+)
+def test_execute_appworld_code_adds_hint_for_common_runtime_failures(
+    failure_text: str,
+    expected_hint: str,
+) -> None:
+    class FakeWorld:
+        def execute(self, code: str) -> str:
+            return failure_text
+
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-failure-1",
+            "instruction": "Inspect an AppWorld expression.",
+        }
+    )
+    adapter._world = FakeWorld()
+    adapter._initialize_from_payload(
+        {"task_id": "aw-failure-1", "instruction": "Inspect an AppWorld expression."}
+    )
+
+    result = adapter.execute_task_code("print('x')")
+
+    assert isinstance(result, str)
+    assert expected_hint in result
