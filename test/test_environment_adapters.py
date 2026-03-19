@@ -207,9 +207,46 @@ def test_react_agent_injects_public_environment_context_only() -> None:
         for message in llm.messages[0]
         if message.get("role") == "system"
     ]
-    assert any("Active environment context." in message for message in system_messages)
+    assert any("Active AppWorld context summary." in message for message in system_messages)
     assert any("Resolve the billing discrepancy." in message for message in system_messages)
     assert all("TOP-SECRET" not in message for message in system_messages)
+
+
+def test_appworld_render_prompt_context_is_compact() -> None:
+    adapter = AppWorldEnvironmentAdapter(
+        task_payload={
+            "task_id": "aw-compact-1",
+            "instruction": "Resolve the billing discrepancy.",
+            "public_data": {
+                "required_apps": ["spotify"],
+                "public_data": {
+                    "metric_adjective": "liked",
+                    "most_least": "most",
+                },
+                "supervisor": {
+                    "email": "ava@example.com",
+                    "phone_number": "1234567890",
+                },
+                "docs": ["doc one", "doc two"],
+                "hints": ["hint one"],
+            },
+            "expected_answer": "TOP-SECRET",
+        }
+    )
+    adapter.initialize()
+
+    rendered = adapter.render_prompt_context()
+
+    assert "Active AppWorld context summary. Only public task data is available." in rendered
+    assert "Task ID: aw-compact-1" in rendered
+    assert "Goal: Resolve the billing discrepancy." in rendered
+    assert "Required apps: spotify." in rendered
+    assert "Supervisor: email=ava@example.com, phone_number=1234567890." in rendered
+    assert "Public signals: metric_adjective=liked, most_least=most." in rendered
+    assert "Hint count: 1." in rendered
+    assert "Doc snippet count: 2." in rendered
+    assert '"environment": "appworld"' not in rendered
+    assert "TOP-SECRET" not in rendered
 
 
 def test_environment_adapter_requires_initialization() -> None:

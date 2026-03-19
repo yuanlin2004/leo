@@ -390,24 +390,27 @@ def test_run_appworld_tasks_accepts_null_final_answer(
 
 
 def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
-    assert "`apis`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "closed simulated environment" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "`apis` object" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "`apis.<app_name>.<api_name>(...)`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "inventing `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "Do not guess alternate usernames" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "do not invent `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "do not call get_environment_task_context at the start" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Do not guess API names or parameters" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "list_appworld_apis" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "describe_appworld_api" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "first execute_appworld_code snippet should usually happen by turn 3" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "After one broad list_appworld_apis call" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "task_plan_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "write the execute_appworld_code snippet yourself" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "access token" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "documented parameter list as exact" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "Do not manually retype" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "smallest linear snippet" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "syntax-check indentation" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "execute_appworld_code" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "do not use execute_python" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "short, linear snippets" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Use print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "do not retype access tokens" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Treat documented parameters as exact" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "`exit()`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "maximum page_limit is 20" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "page_limit at 20" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Interpret ranking words literally" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "playlist library and liked playlists" in APPWORLD_RUN_PROMPT_SUPPLEMENT
+    assert "Aggregate across all relevant records" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
 
 

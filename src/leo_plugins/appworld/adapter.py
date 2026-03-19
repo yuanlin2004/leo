@@ -119,6 +119,46 @@ class AppWorldEnvironmentAdapter(EnvironmentAdapter):
     def _get_blocked_tool_names(self) -> set[str]:
         return {"execute_python"}
 
+    def render_prompt_context(self) -> str:
+        self._require_initialized()
+        if self._context is None:
+            raise EnvironmentAdapterError("AppWorld task context is unavailable.")
+        lines = [
+            "Active AppWorld context summary. Only public task data is available.",
+            f"Task ID: {self._context.task_id}",
+            f"Goal: {self._context.instruction}",
+        ]
+        if self._context.required_apps:
+            lines.append(
+                "Required apps: " + ", ".join(self._context.required_apps) + "."
+            )
+        supervisor_parts = [
+            f"email={self._context.supervisor['email']}"
+            if self._context.supervisor.get("email")
+            else "",
+            f"phone_number={self._context.supervisor['phone_number']}"
+            if self._context.supervisor.get("phone_number")
+            else "",
+        ]
+        supervisor_parts = [part for part in supervisor_parts if part]
+        if supervisor_parts:
+            lines.append("Supervisor: " + ", ".join(supervisor_parts) + ".")
+        public_signal_parts: list[str] = []
+        for key, raw_value in self._context.public_data.items():
+            if raw_value is None or isinstance(raw_value, (dict, list, tuple, set)):
+                continue
+            value = str(raw_value).strip()
+            if not value:
+                continue
+            public_signal_parts.append(f"{key}={value}")
+        if public_signal_parts:
+            lines.append("Public signals: " + ", ".join(public_signal_parts) + ".")
+        if self._context.hints:
+            lines.append(f"Hint count: {len(self._context.hints)}.")
+        if self._context.docs:
+            lines.append(f"Doc snippet count: {len(self._context.docs)}.")
+        return "\n".join(lines)
+
     def _initialize(self) -> dict[str, Any]:
         if self._task_path is None and not self._task_payload and self._task_id:
             return self._initialize_live_task()
