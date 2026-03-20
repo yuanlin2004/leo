@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from leo.cli.banner import render_leo_banner
-from leo.cli.main import _format_config, create_agent, parse_args, run
+from leo.cli.main import AgentRuntimeBuilder, _format_config, main, parse_args, run_environment_command
 from leo.core.llm import LeoLLMClient
 
 
@@ -181,7 +181,7 @@ def test_parse_args_loads_dotenv_defaults(tmp_path: Path, monkeypatch) -> None:
     assert args.model == "from-dotenv-model"
 
 
-def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
+def test_runtime_builder_create_uses_home_leo_skills(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class StubRegistry:
@@ -223,7 +223,7 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
         patch("leo.cli.main.ReActAgent", StubAgent),
         patch("leo.cli.main.Path.home", return_value=fake_home),
     ):
-        create_agent(args)
+        AgentRuntimeBuilder.from_args(args).create()
 
     assert captured["skills_root"] == "/tmp/ext-skills"
     assert captured["user_skills_root"] == fake_home / ".leo" / "skills"
@@ -232,7 +232,7 @@ def test_create_agent_uses_home_leo_skills(monkeypatch) -> None:
     assert captured["plugin_ids"] == []
 
 
-def test_create_llm_client_passes_timeout_and_retries(monkeypatch) -> None:
+def test_runtime_builder_creates_llm_with_timeout_and_retries(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class StubLLM:
@@ -244,9 +244,7 @@ def test_create_llm_client_passes_timeout_and_retries(monkeypatch) -> None:
     )
 
     with patch("leo.cli.main.LeoLLMClient", StubLLM):
-        from leo.cli.main import create_llm_client
-
-        create_llm_client(args)
+        AgentRuntimeBuilder.from_args(args)
 
     assert captured["kwargs"] == {
         "model": args.model,
@@ -303,7 +301,7 @@ def test_leo_llm_client_retries_timeout_once(monkeypatch) -> None:
     assert attempts["count"] == 2
 
 
-def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
+def test_runtime_builder_create_passes_benchmark_profile_prompt(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class StubRegistry:
@@ -337,14 +335,14 @@ def test_create_agent_passes_benchmark_profile_prompt(monkeypatch) -> None:
         patch("leo.cli.main.LeoLLMClient", StubLLM),
         patch("leo.cli.main.ReActAgent", StubAgent),
     ):
-        create_agent(args)
+        AgentRuntimeBuilder.from_args(args).create()
 
     assert captured["capability_profile"].name == "benchmark-environment"
     assert "restricted environment" in captured["extra_system_prompt"]
     assert captured["plugin_ids"] == []
 
 
-def test_create_agent_loads_plugin_ids_from_explicit_agent_spec(tmp_path: Path) -> None:
+def test_runtime_builder_create_loads_plugin_ids_from_explicit_agent_spec(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
     spec_path = tmp_path / "agent-spec.yaml"
     spec_path.write_text(
@@ -395,7 +393,7 @@ def test_create_agent_loads_plugin_ids_from_explicit_agent_spec(tmp_path: Path) 
         patch("leo.cli.main.LeoLLMClient", StubLLM),
         patch("leo.cli.main.ReActAgent", StubAgent),
     ):
-        create_agent(args)
+        AgentRuntimeBuilder.from_args(args).create()
 
     assert captured["capability_profile"].name == "generic"
     assert captured["plugin_ids"] == ["echo-plugin"]
@@ -406,8 +404,8 @@ def test_run_ask_uses_agent_run() -> None:
     agent = FakeAgent()
     outputs: list[str] = []
 
-    code = run(
-        args,
+    code = main(
+        ["ask", "--max-iterations", "4", "status", "check"],
         agent_factory=lambda _args: agent,
         output_fn=outputs.append,
     )
@@ -423,8 +421,8 @@ def test_run_chat_sends_messages_until_exit() -> None:
     outputs: list[str] = []
     inputs = iter(["hello", "   ", "/exit"])
 
-    code = run(
-        args,
+    code = main(
+        ["chat", "--max-iterations", "3", "--no-banner"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -444,8 +442,8 @@ def test_run_defaults_to_chat_without_subcommand() -> None:
     outputs: list[str] = []
     inputs = iter(["/exit"])
 
-    code = run(
-        args,
+    code = main(
+        ["--no-banner"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -471,13 +469,60 @@ def test_run_replay_outputs_trace_summary(tmp_path: Path) -> None:
     args = parse_args(["replay", "--trace", str(trace_path)])
     outputs: list[str] = []
 
-    code = run(args, output_fn=outputs.append)
+    code = main(["replay", "--trace", str(trace_path)], output_fn=outputs.append)
 
     assert code == 0
     replay_payload = json.loads(outputs[0])
     assert replay_payload["trace_path"] == str(trace_path.resolve())
     assert replay_payload["event_count"] == 1
     assert replay_payload["events"][0]["event_type"] == "run_start"
+
+
+def test_run_environment_command_uses_shared_runtime_builder() -> None:
+    args = parse_args(["evaluate", "--environment", "appworld", "--task-id", "task-1"])
+    outputs: list[str] = []
+    fake_registry = object()
+    fake_trace = object()
+    summary = SimpleNamespace(to_dict=lambda: {"success": True})
+    captured: dict[str, object] = {}
+
+    class StubRuntimeBuilder:
+        def create_for_environment(
+            self,
+            plugin,
+            *,
+            registry,
+            extra_system_prompt,
+            trace,
+        ):
+            captured["plugin"] = plugin
+            captured["registry"] = registry
+            captured["extra_system_prompt"] = extra_system_prompt
+            captured["trace"] = trace
+            return "built-agent"
+
+    class StubPlugin:
+        def run(self, run_args, *, agent_builder, evaluate):
+            captured["run_args"] = run_args
+            captured["evaluate"] = evaluate
+            captured["agent"] = agent_builder(fake_registry, "env prompt", fake_trace)
+            return summary
+
+    with patch("leo.cli.main.load_environment_plugin", return_value=StubPlugin()):
+        code = run_environment_command(
+            args,
+            StubRuntimeBuilder(),
+            output_fn=outputs.append,
+        )
+
+    assert code == 0
+    assert captured["run_args"] is args
+    assert captured["evaluate"] is True
+    assert captured["registry"] is fake_registry
+    assert captured["extra_system_prompt"] == "env prompt"
+    assert captured["trace"] is fake_trace
+    assert captured["agent"] == "built-agent"
+    assert json.loads(outputs[0]) == {"success": True}
 
 
 def test_run_chat_commands_work() -> None:
@@ -517,8 +562,25 @@ def test_run_chat_commands_work() -> None:
         ]
     )
 
-    code = run(
-        args,
+    code = main(
+        [
+            "chat",
+            "--agent",
+            "simple",
+            "--provider",
+            "ollama",
+            "--model",
+            "qwen2.5:14b",
+            "--temperature",
+            "0.4",
+            "--log-level",
+            "DEBUG",
+            "--max-iterations",
+            "7",
+            "--skills-root",
+            "/tmp/skills",
+            "--no-banner",
+        ],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -547,8 +609,8 @@ def test_run_chat_command_errors() -> None:
         ["/skill", "/skill missing", "/log-level", "/log-level noisy", "/unknown", "/exit"]
     )
 
-    code = run(
-        args,
+    code = main(
+        ["chat", "--no-banner"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -568,8 +630,8 @@ def test_run_chat_shows_banner_by_default() -> None:
     outputs: list[str] = []
     inputs = iter(["/exit"])
 
-    code = run(
-        args,
+    code = main(
+        ["chat"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -596,8 +658,8 @@ def test_run_chat_save_and_load_transcript(tmp_path: Path, monkeypatch) -> None:
         ]
     )
 
-    code = run(
-        args,
+    code = main(
+        ["chat", "--no-banner"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,
@@ -634,8 +696,8 @@ def test_run_chat_save_and_load_errors(tmp_path: Path, monkeypatch) -> None:
         ]
     )
 
-    code = run(
-        args,
+    code = main(
+        ["chat", "--no-banner"],
         agent_factory=lambda _args: agent,
         input_fn=lambda _prompt: next(inputs),
         output_fn=outputs.append,

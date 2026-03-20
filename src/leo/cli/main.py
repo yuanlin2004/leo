@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -194,17 +195,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     return parser.parse_args(raw_argv)
 
-
-def create_llm_client(args: argparse.Namespace) -> LeoLLMClient:
-    return LeoLLMClient(
-        model=args.model,
-        provider=args.provider,
-        temperature=args.temperature,
-        timeout=args.llm_timeout,
-        max_retries=args.llm_max_retries,
-    )
-
-
 def resolve_runtime_agent_spec(args: argparse.Namespace) -> AgentSpec:
     spec_ref = getattr(args, "agent_spec", None)
     if spec_ref:
@@ -212,72 +202,104 @@ def resolve_runtime_agent_spec(args: argparse.Namespace) -> AgentSpec:
     return load_agent_spec("generic")
 
 
-def build_agent(
-    args: argparse.Namespace,
-    *,
-    tools_registry: ToolsRegistry | None = None,
-    llm: Any | None = None,
-    extra_system_prompt: str | None = None,
-) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
-    spec = resolve_runtime_agent_spec(args)
-    profile = resolve_capability_profile(args.profile or spec.capability_profile)
-    registry = tools_registry or ToolsRegistry(
-        skills_root=args.skills_root,
-        user_skills_root=Path.home() / ".leo" / "skills",
-        mcp_config_path=args.mcp_config,
-        capability_profile=profile,
-        plugin_ids=spec.plugin_ids(),
-    )
-    llm_client = llm or create_llm_client(args)
-    combined_extra_prompt = "".join(
-        part
-        for part in [
-            spec.extra_system_prompt,
-            profile.extra_system_prompt,
-            extra_system_prompt,
-        ]
-        if part
-    ) or None
-    if args.agent == "simple":
-        return SimpleAgent(
-            name="leo-simple",
+@dataclass(frozen=True)
+class AgentRuntimeBuilder:
+    args: argparse.Namespace
+    spec: AgentSpec
+    capability_profile: Any
+    base_llm_client: Any
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "AgentRuntimeBuilder":
+        spec = resolve_runtime_agent_spec(args)
+        capability_profile = resolve_capability_profile(
+            args.profile or spec.capability_profile
+        )
+        return cls(
+            args=args,
+            spec=spec,
+            capability_profile=capability_profile,
+            base_llm_client=LeoLLMClient(
+                model=args.model,
+                provider=args.provider,
+                temperature=args.temperature,
+                timeout=args.llm_timeout,
+                max_retries=args.llm_max_retries,
+            ),
+        )
+
+    def _create_tools_registry(self) -> ToolsRegistry:
+        return ToolsRegistry(
+            skills_root=self.args.skills_root,
+            user_skills_root=Path.home() / ".leo" / "skills",
+            mcp_config_path=self.args.mcp_config,
+            capability_profile=self.capability_profile,
+            plugin_ids=self.spec.plugin_ids(),
+        )
+
+    def _combine_extra_system_prompt(
+        self, extra_system_prompt: str | None = None
+    ) -> str | None:
+        return "".join(
+            part
+            for part in [
+                self.spec.extra_system_prompt,
+                self.capability_profile.extra_system_prompt,
+                extra_system_prompt,
+            ]
+            if part
+        ) or None
+
+    def create(
+        self,
+        *,
+        tools_registry: ToolsRegistry | None = None,
+        llm: Any | None = None,
+        extra_system_prompt: str | None = None,
+    ) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
+        registry = tools_registry or self._create_tools_registry()
+        llm_client = llm or self.base_llm_client
+        combined_extra_prompt = self._combine_extra_system_prompt(extra_system_prompt)
+        if self.args.agent == "simple":
+            return SimpleAgent(
+                name="leo-simple",
+                llm=llm_client,
+                tools_registry=registry,
+                extra_system_prompt=combined_extra_prompt,
+            )
+        if self.args.agent == "plan-execute":
+            return PlanExecuteAgent(
+                name="leo-plan-execute",
+                llm=llm_client,
+                tools_registry=registry,
+                extra_system_prompt=combined_extra_prompt,
+            )
+        return ReActAgent(
+            name="leo-react",
             llm=llm_client,
             tools_registry=registry,
             extra_system_prompt=combined_extra_prompt,
         )
-    if args.agent == "plan-execute":
-        return PlanExecuteAgent(
-            name="leo-plan-execute",
-            llm=llm_client,
-            tools_registry=registry,
-            extra_system_prompt=combined_extra_prompt,
+
+    def create_for_environment(
+        self,
+        plugin: Any,
+        *,
+        registry: ToolsRegistry,
+        extra_system_prompt: str,
+        trace: Any,
+    ) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
+        build_llm = getattr(plugin, "build_llm", None)
+        llm_client = (
+            build_llm(self.base_llm_client, trace)
+            if callable(build_llm)
+            else self.base_llm_client
         )
-    return ReActAgent(
-        name="leo-react",
-        llm=llm_client,
-        tools_registry=registry,
-        extra_system_prompt=combined_extra_prompt,
-    )
-
-
-def create_agent(args: argparse.Namespace) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
-    try:
-        return build_agent(args)
-    except AgentSpecError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def run_ask(
-    agent: Any,
-    args: argparse.Namespace,
-    *,
-    output_fn: Callable[[str], None] = print,
-) -> int:
-    prompt = " ".join(args.prompt).strip()
-    answer = agent.run(prompt, max_iterations=args.max_iterations)
-    output_fn(answer)
-    return 0
-
+        return self.create(
+            tools_registry=registry,
+            llm=llm_client,
+            extra_system_prompt=extra_system_prompt,
+        )
 
 def _format_skills(agent: Any) -> str:
     registry = getattr(agent, "tools_registry", None)
@@ -489,6 +511,19 @@ def _handle_chat_command(
     return False
 
 
+
+def run_ask(
+    agent: Any,
+    args: argparse.Namespace,
+    *,
+    output_fn: Callable[[str], None] = print,
+) -> int:
+    prompt = " ".join(args.prompt).strip()
+    answer = agent.run(prompt, max_iterations=args.max_iterations)
+    output_fn(answer)
+    return 0
+
+
 def run_chat(
     agent: Any,
     args: argparse.Namespace,
@@ -527,52 +562,25 @@ def run_chat(
         output_fn(f"leo> {answer}")
 
 
-def run(
-    args: argparse.Namespace,
-    *,
-    agent_factory: Callable[[argparse.Namespace], Any] = create_agent,
-    input_fn: Callable[[str], str] = input,
-    output_fn: Callable[[str], None] = print,
-) -> int:
-    configure_leo_logging(args.log_level, leo_only=True)
-    if args.command == "replay":
-        output_fn(json.dumps(replay_trace(args.trace), indent=2, sort_keys=True))
-        return 0
-    if args.command in {"run", "evaluate"}:
-        return run_environment_command(args, output_fn=output_fn)
-    agent = agent_factory(args)
-    if args.command == "chat":
-        return run_chat(agent, args, input_fn=input_fn, output_fn=output_fn)
-    return run_ask(agent, args, output_fn=output_fn)
-
 
 def run_environment_command(
     args: argparse.Namespace,
+    runtime_builder: AgentRuntimeBuilder,
     *,
     output_fn: Callable[[str], None] = print,
 ) -> int:
     plugin = load_environment_plugin(args.environment)
-    # Import and initialize the provider client before environment attachment.
-    # Some environments, such as AppWorld, freeze time globally during attach,
-    # which can break libraries imported later via Pydantic v1 compatibility.
-    base_llm_client = create_llm_client(args)
 
     def environment_agent_builder(
         registry: ToolsRegistry,
         extra_system_prompt: str,
         trace: Any,
     ) -> Any:
-        build_llm = getattr(plugin, "build_llm", None)
-        llm_client = (
-            build_llm(base_llm_client, trace)
-            if callable(build_llm)
-            else base_llm_client
-        )
-        return build_agent(
-            args,
-            tools_registry=registry,
-            llm=llm_client,
+        return runtime_builder.create_for_environment(
+            plugin,
+            registry=registry,
             extra_system_prompt=extra_system_prompt,
+            trace=trace,
         )
 
     summary = plugin.run(
@@ -582,6 +590,16 @@ def run_environment_command(
     )
     output_fn(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
     return 0
+
+
+def _create_runtime_builder(args: argparse.Namespace) -> AgentRuntimeBuilder:
+    try:
+        # Import and initialize the provider client before environment attachment.
+        # Some environments, such as AppWorld, freeze time globally during attach,
+        # which can break libraries imported later via Pydantic v1 compatibility.
+        return AgentRuntimeBuilder.from_args(args)
+    except AgentSpecError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _register_environment_plugin_options(
@@ -605,9 +623,31 @@ def _requested_environment_id(raw_argv: Sequence[str]) -> str | None:
     return os.getenv("LEO_ENVIRONMENT")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    agent_factory: Callable[[argparse.Namespace], Any] | None = None,
+    input_fn: Callable[[str], str] = input,
+    output_fn: Callable[[str], None] = print,
+) -> int:
     args = parse_args(argv)
-    return run(args)
+    configure_leo_logging(args.log_level, leo_only=True)
+    if args.command == "replay":
+        output_fn(json.dumps(replay_trace(args.trace), indent=2, sort_keys=True))
+        return 0
+    if args.command in {"run", "evaluate"}:
+        return run_environment_command(
+            args,
+            _create_runtime_builder(args),
+            output_fn=output_fn,
+        )
+    if agent_factory is not None:
+        agent = agent_factory(args)
+    else:
+        agent = _create_runtime_builder(args).create()
+    if args.command == "chat":
+        return run_chat(agent, args, input_fn=input_fn, output_fn=output_fn)
+    return run_ask(agent, args, output_fn=output_fn)
 
 
 if __name__ == "__main__":
