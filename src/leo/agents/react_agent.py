@@ -212,6 +212,8 @@ class ReActAgent(Agent):
     @staticmethod
     def _preview_text(text: str, max_chars: int = _MAX_LOG_PREVIEW_CHARS) -> str:
         normalized = " ".join((text or "").split())
+        return normalized
+        ## do not cut off the preview for now, as it may contain important info about tool results or final answers. if needed, we can re-enable truncation later with the above code.
         if len(normalized) <= max_chars:
             return normalized
         return f"{normalized[:max_chars]}..."
