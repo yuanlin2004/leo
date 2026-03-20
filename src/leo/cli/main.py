@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
+import inspect
 
 from leo import LeoLLMClient
 from leo.agent_spec import AgentSpec, AgentSpecError, load_agent_spec
@@ -288,18 +289,49 @@ class AgentRuntimeBuilder:
         registry: ToolsRegistry,
         extra_system_prompt: str,
         trace: Any,
+        runtime_overrides: dict[str, Any] | None = None,
     ) -> ReActAgent | SimpleAgent | PlanExecuteAgent:
+        llm_base = self.base_llm_client
+        if runtime_overrides:
+            llm_base = _RuntimeOverrideLLM(
+                self.base_llm_client,
+                temperature=runtime_overrides.get("temperature"),
+            )
         build_llm = getattr(plugin, "build_llm", None)
         llm_client = (
-            build_llm(self.base_llm_client, trace)
+            build_llm(llm_base, trace)
             if callable(build_llm)
-            else self.base_llm_client
+            else llm_base
         )
         return self.create(
             tools_registry=registry,
             llm=llm_client,
             extra_system_prompt=extra_system_prompt,
         )
+
+
+class _RuntimeOverrideLLM:
+    def __init__(self, base_llm: Any, *, temperature: float | None = None) -> None:
+        self._base_llm = base_llm
+        self._temperature = temperature
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if self._temperature is not None and "temperature" not in kwargs:
+            kwargs["temperature"] = self._temperature
+        return self._base_llm.complete(messages=messages, tools=tools, **kwargs)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        if self._temperature is not None and "temperature" not in kwargs:
+            kwargs["temperature"] = self._temperature
+        return self._base_llm.invoke(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base_llm, name)
 
 def _format_skills(agent: Any) -> str:
     registry = getattr(agent, "tools_registry", None)
@@ -575,7 +607,20 @@ def run_environment_command(
         registry: ToolsRegistry,
         extra_system_prompt: str,
         trace: Any,
+        runtime_overrides: dict[str, Any] | None = None,
     ) -> Any:
+        try:
+            signature = inspect.signature(runtime_builder.create_for_environment)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and "runtime_overrides" in signature.parameters:
+            return runtime_builder.create_for_environment(
+                plugin,
+                registry=registry,
+                extra_system_prompt=extra_system_prompt,
+                trace=trace,
+                runtime_overrides=runtime_overrides,
+            )
         return runtime_builder.create_for_environment(
             plugin,
             registry=registry,

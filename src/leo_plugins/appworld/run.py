@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import traceback
+import inspect
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from importlib import import_module
@@ -14,6 +15,12 @@ from typing import Any, Callable
 from leo.runs import ConciseTraceRecorder, RunTraceRecorder
 from leo.tools import MCPServerConfig, ToolsRegistry
 from .adapter import AppWorldEnvironmentAdapter
+from .tuning import (
+    ResolvedTuningContext,
+    load_strategy_library,
+    load_tuning_recipe,
+    resolve_tuning_context,
+)
 
 LOGGER = logging.getLogger("leo.appworld.run")
 
@@ -162,6 +169,8 @@ class AppWorldRunConfig:
     appworld_root: Path | None = None
     task_limit: int | None = None
     task_offset: int = 0
+    tuning_recipe_path: str | None = None
+    strategy_library_path: str | None = None
     runtime_config: dict[str, Any] = field(default_factory=dict)
 
     def artifact_root(self) -> Path:
@@ -193,6 +202,8 @@ class AppWorldRunConfig:
             "appworld_root": str(self.appworld_root) if self.appworld_root is not None else None,
             "task_limit": self.task_limit,
             "task_offset": self.task_offset,
+            "tuning_recipe_path": self.tuning_recipe_path,
+            "strategy_library_path": self.strategy_library_path,
             "runtime_config": dict(self.runtime_config),
         }
 
@@ -209,6 +220,7 @@ class AppWorldTaskResult:
     output_directory: str | None = None
     error: str | None = None
     used_mcp_tools: bool = False
+    tuning_info: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -222,6 +234,7 @@ class AppWorldTaskResult:
             "output_directory": self.output_directory,
             "error": self.error,
             "used_mcp_tools": self.used_mcp_tools,
+            "tuning_info": self.tuning_info,
         }
 
 
@@ -311,13 +324,23 @@ class _CombinedTraceRecorder:
 def run_appworld_tasks(
     config: AppWorldRunConfig,
     *,
-    agent_builder: Callable[[ToolsRegistry, str, RunTraceRecorder], Any],
+    agent_builder: Callable[..., Any],
     evaluate: bool = False,
 ) -> AppWorldRunSummary:
     task_inputs = _resolve_task_inputs(config)
     results: list[AppWorldTaskResult] = []
     artifact_root = config.artifact_root()
     artifact_root.mkdir(parents=True, exist_ok=True)
+    tuning_recipe = (
+        load_tuning_recipe(config.tuning_recipe_path)
+        if config.tuning_recipe_path
+        else None
+    )
+    strategy_library = (
+        load_strategy_library(config.strategy_library_path)
+        if config.strategy_library_path
+        else []
+    )
 
     for task_input in task_inputs:
         artifact_dir = artifact_root / task_input["task_id"]
@@ -356,13 +379,34 @@ def run_appworld_tasks(
         output_directory: str | None = None
         error_text: str | None = None
         success = False
+        tuning_context = ResolvedTuningContext(
+            recipe_id=None,
+            app_family="generic",
+            task_family="generic:generic:generic",
+            effective_temperature=None,
+            system_rules=(),
+            selected_strategies=(),
+            extra_system_prompt=None,
+        )
         try:
             attached = registry.attach_environment(adapter)
             combined_trace.emit("task_context", attached)
-            agent = agent_builder(
+            tuning_context = resolve_tuning_context(
+                attached["context"],
+                tuning_recipe,
+                strategy_library,
+            )
+            combined_trace.emit("tuning_context", tuning_context.to_dict())
+            _write_json(artifact_dir / "tuning_context.json", tuning_context.to_dict())
+            agent = _build_agent_for_task(
+                agent_builder,
                 registry,
-                APPWORLD_RUN_PROMPT_SUPPLEMENT,
+                APPWORLD_RUN_PROMPT_SUPPLEMENT
+                + (tuning_context.extra_system_prompt or ""),
                 combined_trace,
+                {
+                    "temperature": tuning_context.effective_temperature,
+                },
             )
             initial_app_hint = _build_initial_app_hint(adapter, attached["context"])
             if initial_app_hint is not None:
@@ -418,6 +462,7 @@ def run_appworld_tasks(
             output_directory=output_directory,
             error=error_text,
             used_mcp_tools=config.use_mcp_tools,
+            tuning_info=tuning_context.to_dict(),
         )
         _write_json(artifact_dir / "result.json", result.to_dict())
         combined_trace.emit("run_complete", result.to_dict())
@@ -557,6 +602,37 @@ def _build_mcp_server_configs(
     raise RuntimeError(
         "AppWorld MCP mode requires --appworld-mcp-url or --appworld-mcp-command."
     )
+
+
+def _build_agent_for_task(
+    agent_builder: Callable[..., Any],
+    registry: ToolsRegistry,
+    extra_system_prompt: str,
+    trace: Any,
+    runtime_overrides: dict[str, Any],
+) -> Any:
+    try:
+        signature = inspect.signature(agent_builder)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None:
+        accepts_varargs = any(
+            parameter.kind == inspect.Parameter.VAR_POSITIONAL
+            for parameter in signature.parameters.values()
+        )
+        if accepts_varargs or len(signature.parameters) >= 4:
+            return agent_builder(
+                registry,
+                extra_system_prompt,
+                trace,
+                runtime_overrides,
+            )
+        return agent_builder(
+            registry,
+            extra_system_prompt,
+            trace,
+        )
+    return agent_builder(registry, extra_system_prompt, trace)
 
 
 def _import_appworld_module() -> Any:

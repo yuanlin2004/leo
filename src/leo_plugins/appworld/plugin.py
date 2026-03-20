@@ -62,6 +62,16 @@ class AppWorldEnvironmentPlugin:
             help="Optional local AppWorld data root.",
         )
         parser.add_argument(
+            "--tuning-recipe-path",
+            default=None,
+            help="Optional AppWorld tuning recipe YAML/JSON file.",
+        )
+        parser.add_argument(
+            "--strategy-library-path",
+            default=None,
+            help="Optional sanitized strategy library JSONL file for runtime exemplar retrieval.",
+        )
+        parser.add_argument(
             "--appworld-mcp",
             action="store_true",
             help="Expose AppWorld task tools through MCP in addition to the environment adapter.",
@@ -126,6 +136,16 @@ class AppWorldEnvironmentPlugin:
             appworld_root=Path(args.appworld_root).resolve() if args.appworld_root else None,
             task_limit=args.task_limit,
             task_offset=args.task_offset,
+            tuning_recipe_path=(
+                str(Path(args.tuning_recipe_path).resolve())
+                if args.tuning_recipe_path
+                else None
+            ),
+            strategy_library_path=(
+                str(Path(args.strategy_library_path).resolve())
+                if args.strategy_library_path
+                else None
+            ),
             runtime_config={
                 "agent": args.agent,
                 "provider": args.provider,

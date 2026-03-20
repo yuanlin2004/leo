@@ -142,6 +142,25 @@ def test_parse_args_accepts_concise_log_level() -> None:
     assert args.log_level == "CONCISE"
 
 
+def test_parse_args_accepts_appworld_tuning_paths() -> None:
+    args = parse_args(
+        [
+            "evaluate",
+            "--environment",
+            "appworld",
+            "--task-id",
+            "task-1",
+            "--tuning-recipe-path",
+            "/tmp/recipe.yaml",
+            "--strategy-library-path",
+            "/tmp/strategy_library.jsonl",
+        ]
+    )
+
+    assert args.tuning_recipe_path == "/tmp/recipe.yaml"
+    assert args.strategy_library_path == "/tmp/strategy_library.jsonl"
+
+
 def test_parse_args_for_replay_command() -> None:
     args = parse_args(["replay", "--trace", "trace.jsonl"])
 
