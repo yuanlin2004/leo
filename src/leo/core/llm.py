@@ -13,8 +13,71 @@ SUPPORTED_PROVIDERS = Literal[
 
 BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
-    "ollama": "http://localhost:11434/v1",
+    "ollama": "http://192.168.29.160:11434/v1",
 }
+
+
+def _normalize_base_url(value: str) -> str:
+    base_url = value.strip()
+    if "://" not in base_url:
+        base_url = f"http://{base_url}"
+    if not base_url.rstrip("/").endswith("/v1"):
+        base_url = f"{base_url.rstrip('/')}/v1"
+    return base_url
+
+
+def _resolve_base_url(provider: str) -> str:
+    if provider == "ollama":
+        return _normalize_base_url(os.getenv("OLLAMA_BASE_URL", BASE_URLS["ollama"]))
+    return BASE_URLS[provider]
+
+
+def _resolve_api_key(provider: str) -> str | None:
+    if provider == "openrouter":
+        return os.getenv("OPENROUTER_API_KEY")
+    if provider == "ollama":
+        return os.getenv("OLLAMA_API_KEY", "ollama")
+    return None
+
+
+def _sanitize_schema_for_ollama(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "type" and isinstance(item, list):
+                allowed_types = [entry for entry in item if entry != "null"]
+                sanitized[key] = allowed_types[0] if allowed_types else "string"
+                continue
+            if key == "anyOf" and isinstance(item, list):
+                non_null_options = [
+                    entry
+                    for entry in item
+                    if not (isinstance(entry, dict) and entry.get("type") == "null")
+                ]
+                if len(non_null_options) == 1:
+                    replacement = _sanitize_schema_for_ollama(non_null_options[0])
+                    if isinstance(replacement, dict):
+                        for nested_key, nested_value in replacement.items():
+                            sanitized[nested_key] = nested_value
+                        continue
+                sanitized[key] = [
+                    _sanitize_schema_for_ollama(entry) for entry in non_null_options
+                ]
+                continue
+            sanitized[key] = _sanitize_schema_for_ollama(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_schema_for_ollama(item) for item in value]
+    return value
+
+
+def _sanitize_tools_for_provider(
+    provider: str,
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if tools is None or provider != "ollama":
+        return tools
+    return [_sanitize_schema_for_ollama(tool) for tool in tools]
 
 class LeoLLMException(Exception):
     pass
@@ -59,11 +122,11 @@ class LeoLLMClient:
         load_project_env()
 
         if self._provider == "openrouter":
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            base_url = BASE_URLS["openrouter"]
+            api_key = _resolve_api_key("openrouter")
+            base_url = _resolve_base_url("openrouter")
         elif self._provider == "ollama":
-            api_key = None  # Ollma does not need an API key 
-            base_url = BASE_URLS["ollama"] 
+            api_key = _resolve_api_key("ollama")
+            base_url = _resolve_base_url("ollama")
         else:
             raise LeoLLMException(f"Unsupported LLM provider: {self._provider}")
 
@@ -93,19 +156,23 @@ class LeoLLMClient:
         tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> Any:
+        request_kwargs = dict(kwargs)
+        if self._provider == "ollama":
+            request_kwargs.pop("response_format", None)
         request = dict(
             model=self._model,
             messages=messages,
-            temperature=kwargs.get("temperature", self._temperature),
-            max_tokens=kwargs.get("max_tokens", self._max_tokens),
+            temperature=request_kwargs.get("temperature", self._temperature),
+            max_tokens=request_kwargs.get("max_tokens", self._max_tokens),
             **{
                 k: v
-                for k, v in kwargs.items()
+                for k, v in request_kwargs.items()
                 if k not in ["temperature", "max_tokens"]
             },
         )
-        if tools:
-            request["tools"] = tools
+        sanitized_tools = _sanitize_tools_for_provider(self._provider, tools)
+        if sanitized_tools:
+            request["tools"] = sanitized_tools
 
         last_error: Exception | None = None
         for attempt_number in range(self._max_retries + 1):

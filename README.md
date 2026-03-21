@@ -53,6 +53,8 @@ leo chat --no-banner
 You can set keys in shell env or `.env`:
 
 - `OPENROUTER_API_KEY`
+- `OLLAMA_API_KEY`
+- `OLLAMA_BASE_URL`
 - `TAVILY_API_KEY`
 - `LEO_PROVIDER`
 - `LEO_MODEL`
