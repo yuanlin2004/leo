@@ -212,6 +212,12 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
 
     assert summary.task_count == 1
     assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is True
+    assert summary.evaluation_passed == 1
+    assert summary.evaluation_failed == 0
     result = summary.results[0]
     assert result.success is True
     assert result.final_answer == "final appworld answer"
@@ -318,6 +324,13 @@ def test_run_appworld_tasks_with_mcp_tools(
     summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
 
     assert summary.task_count == 1
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is True
+    assert summary.evaluation_passed == 1
+    assert summary.evaluation_failed == 0
     result = summary.results[0]
     assert result.success is True
     assert result.used_mcp_tools is True
@@ -381,6 +394,13 @@ def test_run_appworld_tasks_accepts_null_final_answer(
     summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
 
     assert summary.task_count == 1
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is True
+    assert summary.evaluation_passed == 1
+    assert summary.evaluation_failed == 0
     result = summary.results[0]
     assert result.success is True
     assert result.final_answer is None
@@ -556,6 +576,13 @@ def test_run_appworld_tasks_does_not_write_concise_trace_by_default(
     summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=False)
 
     result = summary.results[0]
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is False
+    assert summary.evaluation_passed is None
+    assert summary.evaluation_failed is None
     assert result.concise_trace_path is None
     assert not Path(result.artifact_dir, "trace.concise.txt").exists()
 
@@ -620,3 +647,133 @@ def test_concise_trace_renders_code_arguments_as_multiline_code(
     result = summary.results[0]
     concise_trace = Path(result.concise_trace_path).read_text(encoding="utf-8")
     assert "Arguments:\ncode:\n        x = 1\n        print(x)" in concise_trace
+
+
+def test_run_appworld_tasks_applies_extra_prompt_files_to_system_and_user_prompt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorld,
+        load_task_ids=lambda dataset_name, root=None: ["task-extra-prompts-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-extra-prompts-1",),
+        experiment_name="extra-prompts-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=2,
+        extra_system_prompt="\nExtra system guidance.",
+        extra_user_prompt="Extra user guidance.",
+    )
+    captured: dict[str, object] = {}
+    prompts: list[str] = []
+
+    def agent_builder(registry, extra_system_prompt, trace, runtime_overrides):  # noqa: ANN001
+        captured["extra_system_prompt"] = extra_system_prompt
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "done"}),
+                            )
+                        ],
+                    }
+                ]
+            ),
+            trace,
+        )
+
+        class RecordingReActAgent(ReActAgent):
+            def run(self, user_input: str, max_iterations: int = 10) -> str:
+                prompts.append(user_input)
+                return super().run(user_input, max_iterations=max_iterations)
+
+        return RecordingReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=False)
+
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is False
+    assert summary.evaluation_passed is None
+    assert summary.evaluation_failed is None
+    assert "Extra system guidance." in str(captured["extra_system_prompt"])
+    assert prompts and prompts[0].startswith("Extra user guidance.\n\nSolve the active AppWorld task")
+
+
+def test_run_appworld_summary_separates_run_success_from_evaluation_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_module = SimpleNamespace(
+        AppWorld=_FakeAppWorld,
+        load_task_ids=lambda dataset_name, root=None: ["task-eval-fail-1"],
+    )
+    monkeypatch.setitem(sys.modules, "appworld", fake_module)
+
+    config = AppWorldRunConfig(
+        dataset_name="train",
+        task_ids=("task-eval-fail-1",),
+        experiment_name="evaluation-fail-test",
+        output_root=tmp_path,
+        workspace_root=tmp_path,
+        max_iterations=2,
+    )
+
+    def agent_builder(registry, extra_system_prompt, trace):  # noqa: ANN001
+        llm = TracingLLM(
+            FakeLLM(
+                responses=[
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            FakeToolCall(
+                                "call-final",
+                                "final_answer",
+                                json.dumps({"answer": "wrong answer"}),
+                            )
+                        ],
+                    }
+                ]
+            ),
+            trace,
+        )
+        return ReActAgent(
+            name="react",
+            llm=llm,
+            tools_registry=registry,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    summary = run_appworld_tasks(config, agent_builder=agent_builder, evaluate=True)
+
+    assert summary.task_count == 1
+    assert summary.run_succeeded == 1
+    assert summary.run_failed == 0
+    assert summary.evaluation_available is True
+    assert summary.evaluation_passed == 0
+    assert summary.evaluation_failed == 1
+    assert summary.succeeded == 0
+    assert summary.failed == 1
+    assert summary.results[0].success is True
+    assert summary.results[0].evaluation == {
+        "evaluated": True,
+        "passed": False,
+        "task_id": "task-eval-fail-1",
+    }

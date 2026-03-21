@@ -146,6 +146,8 @@ class AppWorldEnvironmentPlugin:
                 if args.strategy_library_path
                 else None
             ),
+            extra_system_prompt=_read_prompt_file(getattr(args, "extra_sys_prompt", None)),
+            extra_user_prompt=_read_prompt_file(getattr(args, "extra_usr_prompt", None)),
             runtime_config={
                 "agent": args.agent,
                 "provider": args.provider,
@@ -165,3 +167,11 @@ class AppWorldEnvironmentPlugin:
 
 def create_environment_plugin() -> AppWorldEnvironmentPlugin:
     return AppWorldEnvironmentPlugin()
+
+
+def _read_prompt_file(path_text: str | None) -> str | None:
+    text = str(path_text or "").strip()
+    if not text:
+        return None
+    content = Path(text).expanduser().resolve().read_text(encoding="utf-8").strip()
+    return content or None

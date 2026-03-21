@@ -171,6 +171,8 @@ class AppWorldRunConfig:
     task_offset: int = 0
     tuning_recipe_path: str | None = None
     strategy_library_path: str | None = None
+    extra_system_prompt: str | None = None
+    extra_user_prompt: str | None = None
     runtime_config: dict[str, Any] = field(default_factory=dict)
 
     def artifact_root(self) -> Path:
@@ -204,6 +206,8 @@ class AppWorldRunConfig:
             "task_offset": self.task_offset,
             "tuning_recipe_path": self.tuning_recipe_path,
             "strategy_library_path": self.strategy_library_path,
+            "extra_system_prompt": self.extra_system_prompt,
+            "extra_user_prompt": self.extra_user_prompt,
             "runtime_config": dict(self.runtime_config),
         }
 
@@ -244,8 +248,13 @@ class AppWorldRunSummary:
     experiment_name: str
     dataset_name: str
     task_count: int
+    run_succeeded: int
+    run_failed: int
     succeeded: int
     failed: int
+    evaluation_available: bool = False
+    evaluation_passed: int | None = None
+    evaluation_failed: int | None = None
     results: list[AppWorldTaskResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -254,6 +263,11 @@ class AppWorldRunSummary:
             "experiment_name": self.experiment_name,
             "dataset_name": self.dataset_name,
             "task_count": self.task_count,
+            "run_succeeded": self.run_succeeded,
+            "run_failed": self.run_failed,
+            "evaluation_available": self.evaluation_available,
+            "evaluation_passed": self.evaluation_passed,
+            "evaluation_failed": self.evaluation_failed,
             "succeeded": self.succeeded,
             "failed": self.failed,
             "results": [item.to_dict() for item in self.results],
@@ -402,6 +416,7 @@ def run_appworld_tasks(
                 agent_builder,
                 registry,
                 APPWORLD_RUN_PROMPT_SUPPLEMENT
+                + (config.extra_system_prompt or "")
                 + (tuning_context.extra_system_prompt or ""),
                 combined_trace,
                 {
@@ -415,6 +430,7 @@ def run_appworld_tasks(
                 attached["context"],
                 initial_app_hint=initial_app_hint,
             )
+            prompt = _prepend_extra_user_prompt(prompt, config.extra_user_prompt)
             final_answer = agent.run(prompt, max_iterations=config.max_iterations)
             combined_trace.emit("final_answer", {"answer": final_answer})
             saved = registry.save_environment_outputs(
@@ -473,8 +489,29 @@ def run_appworld_tasks(
         experiment_name=config.experiment_name,
         dataset_name=config.dataset_name,
         task_count=len(results),
-        succeeded=sum(1 for item in results if item.success),
-        failed=sum(1 for item in results if not item.success),
+        run_succeeded=sum(1 for item in results if item.success),
+        run_failed=sum(1 for item in results if not item.success),
+        evaluation_available=bool(evaluate),
+        evaluation_passed=(
+            sum(1 for item in results if _did_task_evaluation_pass(item))
+            if evaluate
+            else None
+        ),
+        evaluation_failed=(
+            sum(1 for item in results if _did_task_evaluation_fail(item))
+            if evaluate
+            else None
+        ),
+        succeeded=(
+            sum(1 for item in results if _did_task_evaluation_pass(item))
+            if evaluate
+            else sum(1 for item in results if item.success)
+        ),
+        failed=(
+            sum(1 for item in results if _did_task_evaluation_fail(item))
+            if evaluate
+            else sum(1 for item in results if not item.success)
+        ),
         results=results,
     )
     _write_json(artifact_root / "summary.json", summary.to_dict())
@@ -604,6 +641,28 @@ def _build_mcp_server_configs(
     )
 
 
+def _did_task_evaluation_pass(result: AppWorldTaskResult) -> bool:
+    evaluation = result.evaluation
+    if not isinstance(evaluation, dict):
+        return False
+    success = evaluation.get("success")
+    if isinstance(success, bool):
+        return success
+    passed = evaluation.get("passed")
+    return bool(passed) if isinstance(passed, bool) else False
+
+
+def _did_task_evaluation_fail(result: AppWorldTaskResult) -> bool:
+    evaluation = result.evaluation
+    if not isinstance(evaluation, dict):
+        return False
+    success = evaluation.get("success")
+    if isinstance(success, bool):
+        return not success
+    passed = evaluation.get("passed")
+    return not passed if isinstance(passed, bool) else False
+
+
 def _build_agent_for_task(
     agent_builder: Callable[..., Any],
     registry: ToolsRegistry,
@@ -633,6 +692,16 @@ def _build_agent_for_task(
             trace,
         )
     return agent_builder(registry, extra_system_prompt, trace)
+
+
+def _prepend_extra_user_prompt(prompt: str, extra_user_prompt: str | None) -> str:
+    extra = str(extra_user_prompt or "").strip()
+    base = str(prompt or "").strip()
+    if not extra:
+        return base
+    if not base:
+        return extra
+    return f"{extra}\n\n{base}"
 
 
 def _import_appworld_module() -> Any:

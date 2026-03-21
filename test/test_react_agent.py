@@ -749,13 +749,19 @@ def test_react_agent_retries_after_invalid_structured_response() -> None:
                 ),
                 "tool_calls": [],
             },
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
         ]
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
 
     result = agent.run("do thing", max_iterations=3)
 
-    assert result == "missing thought"
+    assert result == "done"
 
 
 def test_react_agent_extracts_embedded_json_object() -> None:
@@ -843,5 +849,67 @@ def test_react_agent_recovers_from_all_null_placeholder_within_same_turn() -> No
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
 
     result = agent.run("do thing", max_iterations=1)
+
+    assert result == "done"
+
+
+def test_react_agent_does_not_terminate_on_non_final_structured_status_message() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            structured_turn(
+                thought="Prepare",
+                content="Ready to implement code",
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=2)
+
+    assert result == "done"
+
+
+def test_react_agent_recovers_on_next_turn_after_exhausting_empty_placeholder_retries() -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    result = agent.run("do thing", max_iterations=2)
 
     assert result == "done"

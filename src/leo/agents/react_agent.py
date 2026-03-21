@@ -760,12 +760,11 @@ class ReActAgent(Agent):
                 break
             if structured_response is None:
                 assert last_error is not None
-                conversation.append(
-                    {
-                        "role": "assistant",
-                        "content": raw_response_content,
-                    }
-                )
+                if raw_response_content.strip():
+                    LOGGER.warning(
+                        "Turn %d: dropping invalid structured response from persistent conversation after exhausting retries.",
+                        turn_number,
+                    )
                 conversation.append(
                     {
                         "role": "user",
@@ -882,17 +881,18 @@ class ReActAgent(Agent):
                         turn_number,
                     )
                     continue
-                LOGGER.info(
-                    "Turn %d: returning assistant content preview=%s",
+                reminder = (
+                    "Your previous response did not make progress toward completion. "
+                    "Continue the task by either calling an appropriate tool or using the "
+                    "final_answer tool when the work is actually complete."
+                )
+                conversation.append({"role": "user", "content": reminder})
+                LOGGER.warning(
+                    "Turn %d: non-final assistant content without tool calls; requesting continuation. preview=%s",
                     turn_number,
                     self._preview_text(assistant_content or (structured_response.code or "")),
                 )
-                LOGGER.info("Returning assistant content after %d turns.", turn_number)
-                LOGGER.debug(
-                    "Assistant content preview: %s",
-                    self._preview_text(assistant_content or (structured_response.code or "")),
-                )
-                return assistant_content or (structured_response.code or "")
+                continue
 
             conversation.append(
                 {

@@ -142,6 +142,22 @@ def test_parse_args_accepts_concise_log_level() -> None:
     assert args.log_level == "CONCISE"
 
 
+def test_parse_args_accepts_extra_prompt_files() -> None:
+    args = parse_args(
+        [
+            "ask",
+            "--extra-sys-prompt",
+            "/tmp/sys.txt",
+            "--extra-usr-prompt",
+            "/tmp/usr.txt",
+            "hello",
+        ]
+    )
+
+    assert args.extra_sys_prompt == "/tmp/sys.txt"
+    assert args.extra_usr_prompt == "/tmp/usr.txt"
+
+
 def test_parse_args_accepts_appworld_tuning_paths() -> None:
     args = parse_args(
         [
@@ -159,6 +175,105 @@ def test_parse_args_accepts_appworld_tuning_paths() -> None:
 
     assert args.tuning_recipe_path == "/tmp/recipe.yaml"
     assert args.strategy_library_path == "/tmp/strategy_library.jsonl"
+
+
+def test_run_ask_prepends_extra_user_prompt_file(tmp_path: Path) -> None:
+    extra_user_prompt_path = tmp_path / "extra-user.txt"
+    extra_user_prompt_path.write_text("Follow this instruction first.", encoding="utf-8")
+    agent = FakeAgent()
+    outputs: list[str] = []
+
+    code = main(
+        [
+            "ask",
+            "--extra-usr-prompt",
+            str(extra_user_prompt_path),
+            "status",
+            "check",
+        ],
+        agent_factory=lambda _args: agent,
+        output_fn=outputs.append,
+    )
+
+    assert code == 0
+    assert agent.run_calls == [("Follow this instruction first.\n\nstatus check", 10)]
+    assert outputs == ["answer:Follow this instruction first.\n\nstatus check"]
+
+
+def test_run_chat_prepends_extra_user_prompt_only_to_first_turn(tmp_path: Path) -> None:
+    extra_user_prompt_path = tmp_path / "extra-user.txt"
+    extra_user_prompt_path.write_text("Use this prefix once.", encoding="utf-8")
+    agent = FakeAgent()
+    outputs: list[str] = []
+    inputs = iter(["hello", "second", "/exit"])
+
+    code = main(
+        [
+            "chat",
+            "--no-banner",
+            "--extra-usr-prompt",
+            str(extra_user_prompt_path),
+        ],
+        agent_factory=lambda _args: agent,
+        input_fn=lambda _prompt: next(inputs),
+        output_fn=outputs.append,
+    )
+
+    assert code == 0
+    assert agent.session.calls == [
+        ("Use this prefix once.\n\nhello", 10),
+        ("second", 10),
+    ]
+
+
+def test_main_passes_extra_system_prompt_file_into_agent_builder(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    extra_system_prompt_path = tmp_path / "extra-system.txt"
+    extra_system_prompt_path.write_text("Additional system guidance.", encoding="utf-8")
+
+    class StubRegistry:
+        def __init__(
+            self,
+            skills_root=None,
+            *,
+            user_skills_root=None,
+            mcp_config_path=None,
+            capability_profile=None,
+            plugin_ids=None,
+        ) -> None:
+            return None
+
+        def get_all_tools(self) -> dict[str, str]:
+            return {}
+
+    class StubLLM:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+    class StubAgent:
+        def __init__(self, name, llm, tools_registry, extra_system_prompt=None) -> None:
+            captured["extra_system_prompt"] = extra_system_prompt
+
+        def run(self, prompt: str, max_iterations: int = 10) -> str:
+            return "ok"
+
+    with (
+        patch("leo.cli.main.ToolsRegistry", StubRegistry),
+        patch("leo.cli.main.LeoLLMClient", StubLLM),
+        patch("leo.cli.main.ReActAgent", StubAgent),
+    ):
+        code = main(
+            [
+                "ask",
+                "--extra-sys-prompt",
+                str(extra_system_prompt_path),
+                "hello",
+            ],
+            output_fn=lambda _text: None,
+        )
+
+    assert code == 0
+    assert "Additional system guidance." in str(captured["extra_system_prompt"])
 
 
 def test_parse_args_for_replay_command() -> None:
@@ -318,6 +433,94 @@ def test_leo_llm_client_retries_timeout_once(monkeypatch) -> None:
 
     assert message.content == "ok"
     assert attempts["count"] == 2
+
+
+def test_leo_llm_client_uses_configured_ollama_base_url(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **_kwargs: SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(content="ok", tool_calls=None)
+                            )
+                        ]
+                    )
+                )
+            )
+
+    fake_openai_module = SimpleNamespace(OpenAI=FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
+    monkeypatch.setattr("leo.core.llm.load_project_env", lambda: None)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "192.168.29.160:11434")
+
+    client = LeoLLMClient(
+        model="qwen2.5:14b",
+        provider="ollama",
+    )
+
+    message = client.complete(messages=[{"role": "user", "content": "hello"}])
+
+    assert message.content == "ok"
+    assert captured["api_key"] == "ollama"
+    assert captured["base_url"] == "http://192.168.29.160:11434/v1"
+
+
+def test_leo_llm_client_sanitizes_ollama_request_shape(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):  # noqa: ANN003
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None)
+                    )
+                ]
+            )
+
+    fake_openai_module = SimpleNamespace(OpenAI=FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
+    monkeypatch.setattr("leo.core.llm.load_project_env", lambda: None)
+
+    client = LeoLLMClient(
+        model="gpt-oss:20b",
+        provider="ollama",
+    )
+
+    message = client.complete(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "final_answer",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": ["string", "number", "null"]},
+                        },
+                        "required": ["answer"],
+                    },
+                },
+            }
+        ],
+        response_format={"type": "json_schema"},
+    )
+
+    assert message.content == "ok"
+    assert "response_format" not in captured
+    assert captured["tools"][0]["function"]["parameters"]["properties"]["answer"]["type"] == "string"
 
 
 def test_runtime_builder_create_passes_benchmark_profile_prompt(monkeypatch) -> None:

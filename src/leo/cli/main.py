@@ -98,6 +98,16 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         help="LLM temperature.",
     )
     parser.add_argument(
+        "--extra-sys-prompt",
+        default=None,
+        help="Path to a file whose contents are appended to the system prompt.",
+    )
+    parser.add_argument(
+        "--extra-usr-prompt",
+        default=None,
+        help="Path to a file whose contents are prepended to the first user prompt.",
+    )
+    parser.add_argument(
         "--llm-timeout",
         type=float,
         default=float(os.getenv("LEO_LLM_TIMEOUT", "90")),
@@ -386,6 +396,8 @@ def _format_config(args: argparse.Namespace) -> str:
             f"- agent_spec: {getattr(args, 'agent_spec', None) or '(builtin default)'}",
             f"- profile: {args.profile}",
             f"- temperature: {args.temperature}",
+            f"- extra_sys_prompt: {args.extra_sys_prompt or '(none)'}",
+            f"- extra_usr_prompt: {args.extra_usr_prompt or '(none)'}",
             f"- max_iterations: {args.max_iterations}",
             f"- skills_root: {args.skills_root}",
             f"- mcp_config: {args.mcp_config or '(none)'}",
@@ -413,6 +425,25 @@ def _resolve_path(path_text: str) -> Path:
     if not path.is_absolute():
         path = Path.cwd() / path
     return path.resolve()
+
+
+def _load_prompt_file(path_text: str | None) -> str | None:
+    text = str(path_text or "").strip()
+    if not text:
+        return None
+    path = _resolve_path(text)
+    content = path.read_text(encoding="utf-8").strip()
+    return content or None
+
+
+def _merge_first_user_prompt(user_prompt: str, extra_user_prompt: str | None) -> str:
+    prompt = str(user_prompt or "").strip()
+    extra = str(extra_user_prompt or "").strip()
+    if not extra:
+        return prompt
+    if not prompt:
+        return extra
+    return f"{extra}\n\n{prompt}"
 
 
 def _save_conversation(session: Any, path_text: str, *, agent: Any | None = None) -> Path:
@@ -550,7 +581,10 @@ def run_ask(
     *,
     output_fn: Callable[[str], None] = print,
 ) -> int:
-    prompt = " ".join(args.prompt).strip()
+    prompt = _merge_first_user_prompt(
+        " ".join(args.prompt).strip(),
+        _load_prompt_file(getattr(args, "extra_usr_prompt", None)),
+    )
     answer = agent.run(prompt, max_iterations=args.max_iterations)
     output_fn(answer)
     return 0
@@ -564,6 +598,8 @@ def run_chat(
     output_fn: Callable[[str], None] = print,
 ) -> int:
     session = agent.create_session()
+    extra_user_prompt = _load_prompt_file(getattr(args, "extra_usr_prompt", None))
+    is_first_user_turn = True
     if not args.no_banner:
         output_fn(render_leo_banner())
         output_fn(_format_config(args))
@@ -586,11 +622,19 @@ def run_chat(
                 args=args,
                 output_fn=output_fn,
             )
+            if user_input.split(maxsplit=1)[0].lower() == "/reset":
+                is_first_user_turn = True
             if should_exit:
                 return 0
             continue
 
-        answer = session.send(user_input, max_iterations=args.max_iterations)
+        prompt = (
+            _merge_first_user_prompt(user_input, extra_user_prompt)
+            if is_first_user_turn
+            else user_input
+        )
+        is_first_user_turn = False
+        answer = session.send(prompt, max_iterations=args.max_iterations)
         output_fn(f"leo> {answer}")
 
 
@@ -689,7 +733,9 @@ def main(
     if agent_factory is not None:
         agent = agent_factory(args)
     else:
-        agent = _create_runtime_builder(args).create()
+        agent = _create_runtime_builder(args).create(
+            extra_system_prompt=_load_prompt_file(getattr(args, "extra_sys_prompt", None))
+        )
     if args.command == "chat":
         return run_chat(agent, args, input_fn=input_fn, output_fn=output_fn)
     return run_ask(agent, args, output_fn=output_fn)
