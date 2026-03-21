@@ -1,8 +1,8 @@
-import json, requests
+import json, os, requests
 from time import time
 from openai import OpenAI
 
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # You can use any model that supports tool calling
 MODEL = "google/gemini-3-flash-preview"
