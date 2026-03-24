@@ -10,6 +10,6 @@ def render_leo_banner() -> str:
             "██║     ██╔══╝  ██║   ██║",
             "███████╗███████╗╚██████╔╝",
             "╚══════╝╚══════╝ ╚═════╝ ",
-            "http://myleo.run version 0.0.1",
+            "https://github.com/yuanlin2004/leo",
         ]
     )
