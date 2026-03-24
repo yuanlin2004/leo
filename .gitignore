@@ -42,3 +42,5 @@ htmlcov/
 Thumbs.db
 
 log
+
+artifacts/
