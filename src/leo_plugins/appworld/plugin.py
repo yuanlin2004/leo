@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from .adapter import AppWorldEnvironment
+from .adapter import AppWorldRunner
 
 
-def create_environment() -> AppWorldEnvironment:
-    return AppWorldEnvironment()
+def create_environment() -> AppWorldRunner:
+    return AppWorldRunner()

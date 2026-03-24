@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from leo.plugins import PluginError, PluginManager
-from leo.environments import EnvironmentIntegration, EnvironmentIntegrationError
+from leo.environments import EnvironmentIntegrationError, TaskEnvironment
 from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
@@ -555,7 +555,7 @@ class ToolsRegistry:
                 )
             self._loaded_plugin_ids.append(plugin_id)
 
-    def attach_environment(self, environment: EnvironmentIntegration) -> dict[str, Any]:
+    def attach_environment(self, environment: TaskEnvironment) -> dict[str, Any]:
         self.detach_environment()
         try:
             context = environment.initialize()

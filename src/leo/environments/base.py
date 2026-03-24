@@ -20,7 +20,9 @@ class EnvironmentToolSpec:
     tags: frozenset[str] = frozenset({"environment", "task-scoped"})
 
 
-class EnvironmentIntegration(ABC):
+class TaskEnvironment(ABC):
+    """Per-task lifecycle: initialize, expose tools, save outputs, evaluate, cleanup."""
+
     environment_id = "environment"
     environment_name = "environment"
 
@@ -30,23 +32,6 @@ class EnvironmentIntegration(ABC):
     @property
     def initialized(self) -> bool:
         return self._initialized
-
-    @abstractmethod
-    def register_run_options(self, parser: argparse.ArgumentParser) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def run(
-        self,
-        args: argparse.Namespace,
-        *,
-        agent_builder: Callable[[Any, str, Any], Any],
-        evaluate: bool,
-    ) -> Any:
-        raise NotImplementedError
-
-    def build_llm(self, llm: Any, trace: Any) -> Any:
-        return llm
 
     def initialize(self) -> dict[str, Any]:
         context = self._initialize()
@@ -121,3 +106,29 @@ class EnvironmentIntegration(ABC):
 
     def _cleanup(self) -> None:
         return None
+
+
+class EnvironmentRunner(ABC):
+    """CLI orchestration: register options and run multi-task loops."""
+
+    environment_id = "environment"
+
+    @abstractmethod
+    def register_run_options(self, parser: argparse.ArgumentParser) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def run(
+        self,
+        args: argparse.Namespace,
+        *,
+        agent_builder: Callable[[Any, str, Any], Any],
+        evaluate: bool,
+    ) -> Any:
+        raise NotImplementedError
+
+
+class EnvironmentIntegration(TaskEnvironment, EnvironmentRunner):
+    """Backward-compatible combined interface (per-task + orchestration)."""
+
+    environment_name = "environment"

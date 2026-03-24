@@ -1,4 +1,4 @@
-from .adapter import AppWorldEnvironment, AppWorldTaskContext
+from .adapter import AppWorldEnvironment, AppWorldRunner, AppWorldTaskContext
 from .plugin import create_environment
 from .run import (
     APPWORLD_RUN_PROMPT_SUPPLEMENT,
@@ -34,6 +34,7 @@ from .sweep import generate_recipe_files, run_sweep
 __all__ = [
     "APPWORLD_RUN_PROMPT_SUPPLEMENT",
     "AppWorldEnvironment",
+    "AppWorldRunner",
     "AppWorldRunConfig",
     "AppWorldRunSummary",
     "AppWorldContextPolicy",

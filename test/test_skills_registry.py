@@ -13,6 +13,24 @@ def _tmux_usable() -> bool:
     return available
 
 
+_anthropics_skills = Path("/tmp/anthropics-skills/skills")
+_openai_skills = Path("/tmp/openai-skills/skills")
+_gemini_skills = Path("/tmp/gemini-skills/skills")
+
+requires_anthropics_skills = pytest.mark.skipif(
+    not (_anthropics_skills / "pdf").exists(),
+    reason="Requires anthropics pdf skill at /tmp/anthropics-skills/skills/pdf",
+)
+requires_openai_skills = pytest.mark.skipif(
+    not (_openai_skills / "openai-docs").exists(),
+    reason="Requires openai-docs skill at /tmp/openai-skills/skills/openai-docs",
+)
+requires_gemini_skills = pytest.mark.skipif(
+    not (_gemini_skills / "vertex-ai-api-dev").exists(),
+    reason="Requires vertex-ai-api-dev skill at /tmp/gemini-skills/skills/vertex-ai-api-dev",
+)
+
+
 def _write_skill(
     root: Path,
     *,
@@ -270,6 +288,7 @@ def test_registry_restore_reactivates_tools_from_transcript_state() -> None:
     assert current["iso"] == "2026-03-13T08:34:56-04:00"
 
 
+@requires_anthropics_skills
 def test_registry_loads_skill_resource_from_activated_external_skill() -> None:
     registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
 
@@ -290,6 +309,7 @@ def test_registry_loads_skill_resource_from_activated_external_skill() -> None:
         registry.get_skill_resource("frontend-design", "missing.md")
 
 
+@requires_openai_skills
 def test_registry_exposes_requirements_for_external_skills() -> None:
     registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
 
@@ -302,6 +322,7 @@ def test_registry_exposes_requirements_for_external_skills() -> None:
     )
 
 
+@requires_gemini_skills
 def test_registry_preserves_compatibility_metadata_for_gemini_skill() -> None:
     registry = ToolsRegistry(skills_root="/tmp/gemini-skills/skills")
 
@@ -318,6 +339,7 @@ def test_registry_preserves_compatibility_metadata_for_gemini_skill() -> None:
     )
 
 
+@requires_openai_skills
 def test_registry_prefers_openai_system_channel_for_duplicate_skill_names() -> None:
     registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
 
@@ -406,6 +428,7 @@ def test_registry_reports_missing_binary_in_readiness(tmp_path: Path, monkeypatc
     )
 
 
+@requires_openai_skills
 def test_registry_reports_missing_mcp_server_in_readiness() -> None:
     registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills", mcp_servers=[])
 
@@ -466,6 +489,7 @@ def test_registry_reports_missing_tmux_for_tmux_skill_command(tmp_path: Path) ->
         )
 
 
+@requires_anthropics_skills
 def test_registry_discovers_external_pdf_skill_commands() -> None:
     registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
 
@@ -478,6 +502,7 @@ def test_registry_discovers_external_pdf_skill_commands() -> None:
     assert "fill_fillable_fields" in command_names
 
 
+@requires_openai_skills
 def test_registry_runs_external_python_skill_command_help() -> None:
     registry = ToolsRegistry(skills_root="/tmp/openai-skills/skills")
 
@@ -493,6 +518,7 @@ def test_registry_runs_external_python_skill_command_help() -> None:
     assert "Inspect failing GitHub PR checks" in result["stdout"]
 
 
+@requires_anthropics_skills
 def test_registry_auto_activates_pdf_skill_from_file_extension() -> None:
     registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
 
@@ -580,6 +606,7 @@ def test_registry_executes_brief_writer_after_activation() -> None:
     assert "https://example.com/model" in citations
 
 
+@requires_anthropics_skills
 def test_registry_protected_context_mentions_available_skill_resources() -> None:
     registry = ToolsRegistry(skills_root="/tmp/anthropics-skills/skills")
 

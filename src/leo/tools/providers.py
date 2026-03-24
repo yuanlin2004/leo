@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from leo.environments import EnvironmentIntegration, EnvironmentToolSpec
+from leo.environments import EnvironmentToolSpec, TaskEnvironment
 from leo.skills import SkillActivationResult, SkillsCatalog, SkillsCatalogError
 from leo.tools.mcp import MCPServerConfig, MCPToolRuntime
 
@@ -110,14 +110,14 @@ class LocalToolProvider(BaseToolProvider):
 
 class EnvironmentToolProvider(BaseToolProvider):
     def __init__(self) -> None:
-        self._environment: EnvironmentIntegration | None = None
+        self._environment: TaskEnvironment | None = None
         self._tools: dict[str, RegisteredTool] = {}
 
     @property
-    def environment(self) -> EnvironmentIntegration | None:
+    def environment(self) -> TaskEnvironment | None:
         return self._environment
 
-    def bind_environment(self, environment: EnvironmentIntegration) -> None:
+    def bind_environment(self, environment: TaskEnvironment) -> None:
         registered_tools: dict[str, RegisteredTool] = {}
         for tool in environment.get_tool_specs():
             if tool.name in registered_tools:
@@ -138,7 +138,7 @@ class EnvironmentToolProvider(BaseToolProvider):
 
     @staticmethod
     def _registered_tool_for_spec(
-        environment: EnvironmentIntegration,
+        environment: TaskEnvironment,
         tool: EnvironmentToolSpec,
     ) -> RegisteredTool:
         return RegisteredTool(
