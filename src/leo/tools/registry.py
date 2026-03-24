@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from leo.plugins import PluginError, PluginManager
-from leo.environments import EnvironmentAdapter, EnvironmentAdapterError
+from leo.environments import EnvironmentIntegration, EnvironmentIntegrationError
 from leo.skills import SkillsCatalogError
 from leo.skills.runtime import probe_tmux_runtime
 from leo.tools.core import CoreToolRuntime, build_core_tool_specs
@@ -308,12 +308,12 @@ class ToolsRegistry:
         ]
 
     def _blocked_tool_names(self) -> set[str]:
-        adapter = self._environment_provider.adapter
-        if adapter is None:
+        environment = self._environment_provider.environment
+        if environment is None:
             return set()
         try:
-            return adapter.get_blocked_tool_names()
-        except EnvironmentAdapterError as exc:
+            return environment.get_blocked_tool_names()
+        except EnvironmentIntegrationError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
     def register_tool(
@@ -555,30 +555,30 @@ class ToolsRegistry:
                 )
             self._loaded_plugin_ids.append(plugin_id)
 
-    def attach_environment(self, adapter: EnvironmentAdapter) -> dict[str, Any]:
+    def attach_environment(self, environment: EnvironmentIntegration) -> dict[str, Any]:
         self.detach_environment()
         try:
-            context = adapter.initialize()
+            context = environment.initialize()
             existing_tool_names = self._current_tool_names()
-            for tool in adapter.get_tool_specs():
+            for tool in environment.get_tool_specs():
                 if tool.name in existing_tool_names:
                     raise ToolsRegistryError(f"Duplicate tool name: {tool.name}")
-            self._environment_provider.bind_adapter(adapter)
-        except (EnvironmentAdapterError, ToolProviderError) as exc:
+            self._environment_provider.bind_environment(environment)
+        except (EnvironmentIntegrationError, ToolProviderError) as exc:
             try:
-                adapter.cleanup()
-            except EnvironmentAdapterError:
+                environment.cleanup()
+            except EnvironmentIntegrationError:
                 pass
             raise ToolsRegistryError(str(exc)) from exc
         except ToolsRegistryError:
             try:
-                adapter.cleanup()
-            except EnvironmentAdapterError:
+                environment.cleanup()
+            except EnvironmentIntegrationError:
                 pass
             raise
 
         payload = {
-            "environment": adapter.environment_name,
+            "environment": environment.environment_name,
             "context": context,
             "tool_names": sorted(self._environment_provider.get_registered_tools()),
         }
@@ -586,14 +586,14 @@ class ToolsRegistry:
         return payload
 
     def detach_environment(self) -> None:
-        adapter = self._environment_provider.adapter
+        environment = self._environment_provider.environment
         self._environment_provider.clear()
-        if adapter is None:
+        if environment is None:
             return
-        environment_name = adapter.environment_name
+        environment_name = environment.environment_name
         try:
-            adapter.cleanup()
-        except EnvironmentAdapterError as exc:
+            environment.cleanup()
+        except EnvironmentIntegrationError as exc:
             raise ToolsRegistryError(str(exc)) from exc
         self._emit_event(
             "environment_detached",
@@ -601,29 +601,29 @@ class ToolsRegistry:
         )
 
     def has_active_environment(self) -> bool:
-        return self._environment_provider.adapter is not None
+        return self._environment_provider.environment is not None
 
     def get_environment_public_context(self) -> dict[str, Any] | None:
-        adapter = self._environment_provider.adapter
-        if adapter is None:
+        environment = self._environment_provider.environment
+        if environment is None:
             return None
         try:
-            return adapter.get_public_task_context()
-        except EnvironmentAdapterError as exc:
+            return environment.get_public_task_context()
+        except EnvironmentIntegrationError as exc:
             raise ToolsRegistryError(str(exc)) from exc
 
     def save_environment_outputs(self, outputs: dict[str, Any]) -> dict[str, Any]:
-        adapter = self._environment_provider.adapter
-        if adapter is None:
+        environment = self._environment_provider.environment
+        if environment is None:
             raise ToolsRegistryError("No active environment.")
         try:
-            result = adapter.save_outputs(outputs)
-        except EnvironmentAdapterError as exc:
+            result = environment.save_outputs(outputs)
+        except EnvironmentIntegrationError as exc:
             raise ToolsRegistryError(str(exc)) from exc
         self._emit_event(
             "environment_saved",
             {
-                "environment": adapter.environment_name,
+                "environment": environment.environment_name,
                 "outputs": _summarize_payload(outputs),
                 "result": _summarize_payload(result),
             },
@@ -631,17 +631,17 @@ class ToolsRegistry:
         return result
 
     def evaluate_environment_outputs(self) -> dict[str, Any] | None:
-        adapter = self._environment_provider.adapter
-        if adapter is None:
+        environment = self._environment_provider.environment
+        if environment is None:
             raise ToolsRegistryError("No active environment.")
         try:
-            result = adapter.evaluate_outputs()
-        except EnvironmentAdapterError as exc:
+            result = environment.evaluate_outputs()
+        except EnvironmentIntegrationError as exc:
             raise ToolsRegistryError(str(exc)) from exc
         self._emit_event(
             "environment_evaluated",
             {
-                "environment": adapter.environment_name,
+                "environment": environment.environment_name,
                 "result": _summarize_payload(result),
             },
         )
@@ -711,11 +711,11 @@ class ToolsRegistry:
         if protected_context:
             messages.append({"role": "system", "content": protected_context})
 
-        adapter = self._environment_provider.adapter
-        if adapter is not None:
+        environment = self._environment_provider.environment
+        if environment is not None:
             try:
-                rendered_context = adapter.render_prompt_context()
-            except EnvironmentAdapterError as exc:
+                rendered_context = environment.render_prompt_context()
+            except EnvironmentIntegrationError as exc:
                 raise ToolsRegistryError(str(exc)) from exc
             messages.append({"role": "system", "content": rendered_context})
 

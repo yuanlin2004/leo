@@ -5,18 +5,25 @@ import json
 import pytest
 
 from leo.agents import ReActAgent
-from leo.environments import EnvironmentAdapter, EnvironmentAdapterError, EnvironmentToolSpec
-from leo_plugins.appworld import AppWorldEnvironmentAdapter
+from leo.environments import EnvironmentIntegration, EnvironmentIntegrationError, EnvironmentToolSpec
+from leo_plugins.appworld import AppWorldEnvironment
 from leo.tools.registry import ToolsRegistry, ToolsRegistryError
 from test.fakes import FakeLLM, FakeToolCall
 
 
-class RecordingEnvironmentAdapter(EnvironmentAdapter):
+class RecordingEnvironmentIntegration(EnvironmentIntegration):
+    environment_id = "recording"
     environment_name = "recording"
 
     def __init__(self) -> None:
         super().__init__()
         self.cleanup_calls = 0
+
+    def register_run_options(self, parser) -> None:  # noqa: ANN001
+        return None
+
+    def run(self, args, *, agent_builder, evaluate):  # noqa: ANN001
+        raise NotImplementedError
 
     def _initialize(self) -> dict[str, object]:
         return {"task_id": "recording-1", "instruction": "Test cleanup."}
@@ -43,7 +50,7 @@ class RecordingEnvironmentAdapter(EnvironmentAdapter):
 
 def test_registry_attaches_and_detaches_environment_tools() -> None:
     registry = ToolsRegistry(capability_profile="benchmark-environment")
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-1",
             "instruction": "Prepare a customer support reply.",
@@ -92,7 +99,7 @@ def test_registry_attaches_and_detaches_environment_tools() -> None:
 def test_appworld_adapter_filters_hidden_fields_from_context_and_tools() -> None:
     registry = ToolsRegistry(capability_profile="benchmark-environment")
     registry.attach_environment(
-        AppWorldEnvironmentAdapter(
+        AppWorldEnvironment(
             task_payload={
                 "task_id": "aw-2",
                 "instruction": "Draft the final answer.",
@@ -151,7 +158,7 @@ def test_appworld_adapter_filters_hidden_fields_from_context_and_tools() -> None
 
 def test_reset_session_state_cleans_up_active_environment() -> None:
     registry = ToolsRegistry()
-    adapter = RecordingEnvironmentAdapter()
+    adapter = RecordingEnvironmentIntegration()
     registry.attach_environment(adapter)
 
     registry.reset_session_state()
@@ -187,7 +194,7 @@ def test_react_agent_injects_public_environment_context_only() -> None:
 
     registry = ToolsRegistry(capability_profile="benchmark-environment")
     registry.attach_environment(
-        AppWorldEnvironmentAdapter(
+        AppWorldEnvironment(
             task_payload={
                 "task_id": "aw-3",
                 "instruction": "Resolve the billing discrepancy.",
@@ -213,7 +220,7 @@ def test_react_agent_injects_public_environment_context_only() -> None:
 
 
 def test_appworld_render_prompt_context_is_compact() -> None:
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-compact-1",
             "instruction": "Resolve the billing discrepancy.",
@@ -250,16 +257,16 @@ def test_appworld_render_prompt_context_is_compact() -> None:
 
 
 def test_environment_adapter_requires_initialization() -> None:
-    adapter = RecordingEnvironmentAdapter()
+    adapter = RecordingEnvironmentIntegration()
 
-    with pytest.raises(EnvironmentAdapterError, match="not initialized"):
+    with pytest.raises(EnvironmentIntegrationError, match="not initialized"):
         adapter.get_public_task_context()
 
 
 def test_appworld_docs_search_uses_docs_corpus() -> None:
     registry = ToolsRegistry(capability_profile="benchmark-environment")
     registry.attach_environment(
-        AppWorldEnvironmentAdapter(
+        AppWorldEnvironment(
             task_payload={
                 "task_id": "aw-4",
                 "instruction": "Inspect Spotify APIs.",
@@ -287,7 +294,7 @@ def test_appworld_docs_search_uses_docs_corpus() -> None:
 
 
 def test_execute_appworld_code_tool_description_guides_runtime_usage() -> None:
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-5",
             "instruction": "Inspect Spotify APIs.",
@@ -380,7 +387,7 @@ def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None
     class FakeWorld:
         task = FakeTask()
 
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-6",
             "instruction": "What is the title of the most-liked song in my Spotify playlists.",
@@ -498,7 +505,7 @@ def test_appworld_adapter_lists_and_describes_api_docs_from_live_world() -> None
 
 
 def test_appworld_task_plan_hint_for_mutation_tasks_uses_null_answer() -> None:
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-12",
             "instruction": "I am going on a vacation. Move my go-to-sleep phone alarm to 1 hour later and disable the rest.",
@@ -592,7 +599,7 @@ def test_execute_appworld_code_returns_plain_result_without_strategy_guidance() 
         def execute(self, code: str) -> dict[str, object]:
             return {"executed_code": code}
 
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-9",
             "instruction": "What is the title of the oldest released song in my Spotify account from across my song, album and playlist libraries?",
@@ -626,7 +633,7 @@ def test_execute_appworld_code_returns_plain_result_without_strategy_guidance() 
 
 
 def test_file_system_task_plan_hint_prioritizes_relevant_mutation_apis() -> None:
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-14",
             "instruction": "In my file system, add the prefix \"YYYY-MM-DD_\" to all file names in the ~/downloads/ directory, based on their creation dates, and then move all files not from this year to ~/trash/.",
@@ -737,7 +744,7 @@ def test_execute_appworld_code_auto_prints_final_expression() -> None:
             self.received.append(code)
             return {"executed_code": code}
 
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-7",
             "instruction": "Inspect an AppWorld expression.",
@@ -763,7 +770,7 @@ def test_execute_appworld_code_adds_hint_for_syntax_failures() -> None:
                 "Message: expected an indented block after 'else' statement on line 11"
             )
 
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-syntax-1",
             "instruction": "Inspect an AppWorld expression.",
@@ -821,7 +828,7 @@ def test_execute_appworld_code_adds_hint_for_common_runtime_failures(
         def execute(self, code: str) -> str:
             return failure_text
 
-    adapter = AppWorldEnvironmentAdapter(
+    adapter = AppWorldEnvironment(
         task_payload={
             "task_id": "aw-failure-1",
             "instruction": "Inspect an AppWorld expression.",

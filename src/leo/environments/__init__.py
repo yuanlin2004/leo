@@ -1,7 +1,7 @@
-from .base import EnvironmentAdapter, EnvironmentAdapterError, EnvironmentToolSpec
+from .base import EnvironmentIntegration, EnvironmentIntegrationError, EnvironmentToolSpec
 
 __all__ = [
-    "EnvironmentAdapter",
-    "EnvironmentAdapterError",
+    "EnvironmentIntegration",
+    "EnvironmentIntegrationError",
     "EnvironmentToolSpec",
 ]

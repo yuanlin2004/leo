@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable
 
 
-class EnvironmentAdapterError(Exception):
+class EnvironmentIntegrationError(Exception):
     pass
 
 
@@ -19,7 +20,8 @@ class EnvironmentToolSpec:
     tags: frozenset[str] = frozenset({"environment", "task-scoped"})
 
 
-class EnvironmentAdapter(ABC):
+class EnvironmentIntegration(ABC):
+    environment_id = "environment"
     environment_name = "environment"
 
     def __init__(self) -> None:
@@ -28,6 +30,23 @@ class EnvironmentAdapter(ABC):
     @property
     def initialized(self) -> bool:
         return self._initialized
+
+    @abstractmethod
+    def register_run_options(self, parser: argparse.ArgumentParser) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def run(
+        self,
+        args: argparse.Namespace,
+        *,
+        agent_builder: Callable[[Any, str, Any], Any],
+        evaluate: bool,
+    ) -> Any:
+        raise NotImplementedError
+
+    def build_llm(self, llm: Any, trace: Any) -> Any:
+        return llm
 
     def initialize(self) -> dict[str, Any]:
         context = self._initialize()
@@ -74,7 +93,9 @@ class EnvironmentAdapter(ABC):
 
     def _require_initialized(self) -> None:
         if not self._initialized:
-            raise EnvironmentAdapterError("Environment adapter is not initialized.")
+            raise EnvironmentIntegrationError(
+                "Environment integration is not initialized."
+            )
 
     @abstractmethod
     def _initialize(self) -> dict[str, Any]:

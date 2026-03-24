@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from leo.environments import EnvironmentAdapter, EnvironmentToolSpec
+from leo.environments import EnvironmentIntegration, EnvironmentToolSpec
 from leo.skills import SkillActivationResult, SkillsCatalog, SkillsCatalogError
 from leo.tools.mcp import MCPServerConfig, MCPToolRuntime
 
@@ -110,27 +110,27 @@ class LocalToolProvider(BaseToolProvider):
 
 class EnvironmentToolProvider(BaseToolProvider):
     def __init__(self) -> None:
-        self._adapter: EnvironmentAdapter | None = None
+        self._environment: EnvironmentIntegration | None = None
         self._tools: dict[str, RegisteredTool] = {}
 
     @property
-    def adapter(self) -> EnvironmentAdapter | None:
-        return self._adapter
+    def environment(self) -> EnvironmentIntegration | None:
+        return self._environment
 
-    def bind_adapter(self, adapter: EnvironmentAdapter) -> None:
+    def bind_environment(self, environment: EnvironmentIntegration) -> None:
         registered_tools: dict[str, RegisteredTool] = {}
-        for tool in adapter.get_tool_specs():
+        for tool in environment.get_tool_specs():
             if tool.name in registered_tools:
                 raise ToolProviderError(f"Duplicate environment tool name: {tool.name}")
             registered_tools[tool.name] = self._registered_tool_for_spec(
-                adapter,
+                environment,
                 tool,
             )
-        self._adapter = adapter
+        self._environment = environment
         self._tools = registered_tools
 
     def clear(self) -> None:
-        self._adapter = None
+        self._environment = None
         self._tools = {}
 
     def get_registered_tools(self) -> dict[str, RegisteredTool]:
@@ -138,7 +138,7 @@ class EnvironmentToolProvider(BaseToolProvider):
 
     @staticmethod
     def _registered_tool_for_spec(
-        adapter: EnvironmentAdapter,
+        environment: EnvironmentIntegration,
         tool: EnvironmentToolSpec,
     ) -> RegisteredTool:
         return RegisteredTool(
@@ -148,7 +148,7 @@ class EnvironmentToolProvider(BaseToolProvider):
                 parameters=tool.parameters,
             ),
             handler=tool.handler,
-            provenance=f"environment:{adapter.environment_name}",
+            provenance=f"environment:{environment.environment_name}",
             tags=tool.tags,
         )
 

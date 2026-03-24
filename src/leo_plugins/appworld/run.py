@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from leo.runs import ConciseTraceRecorder, RunTraceRecorder
 from leo.tools import MCPServerConfig, ToolsRegistry
-from .adapter import AppWorldEnvironmentAdapter
+from .adapter import AppWorldEnvironment
 from .tuning import (
     ResolvedTuningContext,
     load_strategy_library,
@@ -386,7 +386,7 @@ def run_appworld_tasks(
             capability_profile="benchmark-environment",
             event_callback=combined_trace.emit,
         )
-        adapter = _build_adapter(config, task_input)
+        environment = _build_environment(config, task_input)
 
         final_answer: str | None = None
         evaluation_payload: dict[str, Any] | None = None
@@ -403,7 +403,7 @@ def run_appworld_tasks(
             extra_system_prompt=None,
         )
         try:
-            attached = registry.attach_environment(adapter)
+            attached = registry.attach_environment(environment)
             combined_trace.emit("task_context", attached)
             tuning_context = resolve_tuning_context(
                 attached["context"],
@@ -423,7 +423,7 @@ def run_appworld_tasks(
                     "temperature": tuning_context.effective_temperature,
                 },
             )
-            initial_app_hint = _build_initial_app_hint(adapter, attached["context"])
+            initial_app_hint = _build_initial_app_hint(environment, attached["context"])
             if initial_app_hint is not None:
                 combined_trace.emit("initial_app_hint", initial_app_hint)
             prompt = _build_appworld_user_prompt(
@@ -571,7 +571,7 @@ def _resolve_task_inputs(config: AppWorldRunConfig) -> list[dict[str, Any]]:
 
 
 def _build_initial_app_hint(
-    adapter: AppWorldEnvironmentAdapter,
+    environment: AppWorldEnvironment,
     task_context: dict[str, Any],
 ) -> dict[str, Any] | None:
     required_apps = task_context.get("required_apps")
@@ -582,7 +582,7 @@ def _build_initial_app_hint(
         if not app_name:
             continue
         try:
-            payload = adapter.list_app_apis(app_name, max_results=6)
+            payload = environment.list_app_apis(app_name, max_results=6)
         except Exception:
             continue
         if isinstance(payload, dict):
@@ -590,17 +590,17 @@ def _build_initial_app_hint(
     return None
 
 
-def _build_adapter(
+def _build_environment(
     config: AppWorldRunConfig,
     task_input: dict[str, Any],
-) -> AppWorldEnvironmentAdapter:
+) -> AppWorldEnvironment:
     task_path = task_input.get("task_path")
     if isinstance(task_path, str) and task_path.strip():
-        return AppWorldEnvironmentAdapter(
+        return AppWorldEnvironment(
             task_path=task_path,
             output_root=config.artifact_root() / task_input["task_id"] / "appworld",
         )
-    return AppWorldEnvironmentAdapter(
+    return AppWorldEnvironment(
         task_id=task_input["task_id"],
         experiment_name=config.experiment_name,
         output_root=config.artifact_root() / task_input["task_id"] / "appworld",

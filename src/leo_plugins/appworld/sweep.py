@@ -8,7 +8,7 @@ from typing import Any, Sequence
 import yaml
 
 from leo.cli.main import AgentRuntimeBuilder
-from .plugin import AppWorldEnvironmentPlugin
+from .adapter import AppWorldEnvironment
 from .run import AppWorldRunConfig
 from .tuning import (
     AppWorldTuningRecipe,
@@ -116,7 +116,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--agent-spec",
-        default=AppWorldEnvironmentPlugin.default_agent_spec,
+        default=AppWorldEnvironment.default_agent_spec,
         help="AgentSpec path or resource for AppWorld runs.",
     )
     parser.add_argument(
@@ -224,7 +224,7 @@ def run_sweep(argv: Sequence[str] | None = None) -> int:
         )
 
     runtime_builder = AgentRuntimeBuilder.from_args(_build_runtime_args(args))
-    plugin = AppWorldEnvironmentPlugin()
+    plugin = AppWorldEnvironment()
 
     def agent_builder(registry, extra_system_prompt, trace, runtime_overrides=None):  # noqa: ANN001
         return runtime_builder.create_for_environment(

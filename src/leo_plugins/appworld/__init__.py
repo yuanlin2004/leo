@@ -1,5 +1,5 @@
-from .adapter import AppWorldEnvironmentAdapter, AppWorldTaskContext
-from .plugin import AppWorldEnvironmentPlugin, create_environment_plugin
+from .adapter import AppWorldEnvironment, AppWorldTaskContext
+from .plugin import create_environment
 from .run import (
     APPWORLD_RUN_PROMPT_SUPPLEMENT,
     AppWorldRunConfig,
@@ -33,8 +33,7 @@ from .sweep import generate_recipe_files, run_sweep
 
 __all__ = [
     "APPWORLD_RUN_PROMPT_SUPPLEMENT",
-    "AppWorldEnvironmentAdapter",
-    "AppWorldEnvironmentPlugin",
+    "AppWorldEnvironment",
     "AppWorldRunConfig",
     "AppWorldRunSummary",
     "AppWorldContextPolicy",
@@ -49,7 +48,7 @@ __all__ = [
     "TracingLLM",
     "build_candidate_recipes",
     "build_task_family",
-    "create_environment_plugin",
+    "create_environment",
     "derive_public_features",
     "load_strategy_library",
     "load_tuning_recipe",
