@@ -116,7 +116,7 @@ if __name__ == "__main__":
 
 
 def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -135,7 +135,7 @@ def test_registry_discovers_skills_and_exposes_lifecycle_tools(tmp_path: Path) -
 
 
 def test_registry_activates_skill_and_registers_runtime_tools(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -153,7 +153,7 @@ def test_registry_activates_skill_and_registers_runtime_tools(tmp_path: Path) ->
 
 
 def test_registry_reset_clears_activated_skills_and_tools(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -168,7 +168,7 @@ def test_registry_reset_clears_activated_skills_and_tools(tmp_path: Path) -> Non
 
 
 def test_registry_marks_invalid_skills_as_not_loadable(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_invalid_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -182,7 +182,7 @@ def test_registry_marks_invalid_skills_as_not_loadable(tmp_path: Path) -> None:
 
 
 def test_registry_prefers_project_skill_over_user_skill_on_collision(tmp_path: Path) -> None:
-    project_root = tmp_path / "project" / ".agents" / "skills"
+    project_root = tmp_path / "project" / ".leo" / "skills"
     user_root = tmp_path / "user" / ".leo" / "skills"
     _write_skill(
         user_root,
@@ -217,7 +217,7 @@ def test_registry_prefers_project_skill_over_user_skill_on_collision(tmp_path: P
 
 
 def test_registry_rejects_duplicate_contributed_tool_names_atomically(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_skill(
         skills_root,
         name="first_skill",
@@ -246,7 +246,7 @@ def test_registry_rejects_duplicate_contributed_tool_names_atomically(tmp_path: 
 
 
 def test_registry_restore_reactivates_tools_from_transcript_state() -> None:
-    skills_root = Path.cwd() / ".agents" / "skills"
+    skills_root = Path.cwd() / ".leo" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
     registry.activate_skill("current_time")
@@ -326,7 +326,7 @@ def test_registry_prefers_openai_system_channel_for_duplicate_skill_names() -> N
 
 
 def test_registry_discovers_commands_from_skill_scripts(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_command_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -346,7 +346,7 @@ def test_registry_discovers_commands_from_skill_scripts(tmp_path: Path) -> None:
 
 
 def test_registry_checks_skill_readiness_without_activation(tmp_path: Path, monkeypatch) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_readiness_skill(skills_root)
     monkeypatch.delenv("READINESS_TOKEN", raising=False)
 
@@ -376,7 +376,7 @@ def test_registry_checks_skill_readiness_without_activation(tmp_path: Path, monk
 
 
 def test_registry_marks_skill_ready_when_env_var_is_present(tmp_path: Path, monkeypatch) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_readiness_skill(skills_root)
     monkeypatch.setenv("READINESS_TOKEN", "ok")
 
@@ -389,7 +389,7 @@ def test_registry_marks_skill_ready_when_env_var_is_present(tmp_path: Path, monk
 
 
 def test_registry_reports_missing_binary_in_readiness(tmp_path: Path, monkeypatch) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_readiness_skill(skills_root)
     monkeypatch.setenv("READINESS_TOKEN", "ok")
     monkeypatch.setattr("leo.tools.registry.shutil.which", lambda _name: None)
@@ -421,7 +421,7 @@ def test_registry_reports_missing_mcp_server_in_readiness() -> None:
 
 
 def test_registry_runs_direct_skill_command(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_command_skill(skills_root)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -439,7 +439,7 @@ def test_registry_runs_direct_skill_command(tmp_path: Path) -> None:
 
 
 def test_registry_reports_missing_tmux_for_tmux_skill_command(tmp_path: Path) -> None:
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     _write_command_skill(skills_root, shell=True)
 
     registry = ToolsRegistry(skills_root=skills_root)
@@ -505,7 +505,7 @@ def test_registry_auto_activates_pdf_skill_from_file_extension() -> None:
 
 
 def test_registry_executes_real_project_skill_tools_after_activation() -> None:
-    skills_root = Path.cwd() / ".agents" / "skills"
+    skills_root = Path.cwd() / ".leo" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
     registry.activate_skill("source_normalizer")
@@ -551,7 +551,7 @@ def test_registry_executes_real_project_skill_tools_after_activation() -> None:
 
 
 def test_registry_executes_brief_writer_after_activation() -> None:
-    skills_root = Path.cwd() / ".agents" / "skills"
+    skills_root = Path.cwd() / ".leo" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
     registry.activate_skill("brief_writer")

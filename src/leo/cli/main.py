@@ -71,7 +71,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--skills-root",
-        default=str(Path(".agents/skills").resolve()),
+        default=str(Path(".leo/skills").resolve()),
         help="Path to skills root directory.",
     )
     parser.add_argument(

@@ -320,7 +320,7 @@ Tasks:
 - Document expected environment requirements for each skill.
 
 Candidate files:
-- New skill folders under `.agents/skills/`
+- New skill folders under `.leo/skills/`
 - [test/test_skills_registry.py](/Users/yuan/Documents/GitHub/leo/test/test_skills_registry.py)
 - [test/test_react_agent.py](/Users/yuan/Documents/GitHub/leo/test/test_react_agent.py)
 

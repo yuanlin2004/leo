@@ -46,7 +46,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--skills-root",
-        default=str(Path(".agents/skills").resolve()),
+        default=str(Path(".leo/skills").resolve()),
         help="Path to skills root directory.",
     )
     parser.add_argument(
@@ -83,7 +83,7 @@ def main() -> None:
     if "web_search" not in skill_names:
         raise SystemExit(
             f"web_search skill not found under {args.skills_root}. "
-            "Expected .agents/skills/web_search/SKILL.md."
+            "Expected .leo/skills/web_search/SKILL.md."
         )
 
     llm = LeoLLMClient(model=args.model, provider=args.provider, temperature=0.2)

@@ -451,7 +451,7 @@ def test_react_agent_does_not_treat_different_args_as_repeat() -> None:
 
 
 def test_react_agent_activates_web_search_skill_and_uses_contributed_tool() -> None:
-    skills_root = Path.cwd() / ".agents" / "skills"
+    skills_root = Path.cwd() / ".leo" / "skills"
     registry = ToolsRegistry(skills_root=skills_root)
 
     llm = FakeLLM(
@@ -528,7 +528,7 @@ def test_react_agent_auto_activates_pdf_skill_from_user_path(tmp_path: Path) -> 
             self.calls.append(json.loads(json.dumps(messages)))
             return super().complete(messages=messages, tools=tools, **kwargs)
 
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = tmp_path / ".leo" / "skills"
     write_basic_skill(skills_root, name="pdf", description="Handle PDF files.")
     registry = ToolsRegistry(skills_root=skills_root)
     llm = RecordingLLM(

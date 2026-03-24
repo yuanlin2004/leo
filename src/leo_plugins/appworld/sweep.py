@@ -121,7 +121,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--skills-root",
-        default=str(Path(".agents/skills").resolve()),
+        default=str(Path(".leo/skills").resolve()),
         help="Skills root passed into Leo's runtime builder.",
     )
     parser.add_argument(

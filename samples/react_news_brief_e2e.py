@@ -46,7 +46,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--skills-root",
-        default=str(Path(".agents/skills").resolve()),
+        default=str(Path(".leo/skills").resolve()),
         help="Path to skills root directory.",
     )
     parser.add_argument(

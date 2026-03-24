@@ -334,7 +334,7 @@ class SkillsCatalog:
 
         discovered_project_roots: list[Path] = []
         for base in [Path.cwd(), *Path.cwd().parents]:
-            candidate = (base / ".agents" / "skills").resolve()
+            candidate = (base / ".leo" / "skills").resolve()
             if candidate.exists() and candidate not in discovered_project_roots:
                 discovered_project_roots.append(candidate)
 
