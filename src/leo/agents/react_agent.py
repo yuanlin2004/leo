@@ -90,6 +90,7 @@ class ReActAgent(Agent):
     _MAX_REPEAT_ACTIONS = 2
     _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 3
     _MAX_LOG_PREVIEW_CHARS = 200
+    _MAX_TOOL_RESULT_HISTORY_CHARS = 2000
     _FINAL_ANSWER_TOOL_NAME = "final_answer"
     _STRUCTURED_RESPONSE_FORMAT_NAME = "react_agent_turn"
     _STRUCTURED_RESPONSE_FALLBACK_THOUGHT = "Continuing with the task."
@@ -273,7 +274,7 @@ class ReActAgent(Agent):
             return [
                 conversation[0],
                 tool_schema_message,
-                *conversation[1:],
+                *self._trim_tool_results(conversation[1:]),
             ]
         system_message = (
             conversation[0]
@@ -285,8 +286,39 @@ class ReActAgent(Agent):
             system_message,
             tool_schema_message,
             *runtime_messages,
-            *remainder,
+            *self._trim_tool_results(remainder),
         ]
+
+    def _trim_tool_results(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Truncate tool message content in history to avoid context bloat.
+
+        The most recent tool message is kept in full so the model always
+        sees the latest result without truncation. Older tool messages are
+        capped at _MAX_TOOL_RESULT_HISTORY_CHARS.
+        """
+        max_chars = self._MAX_TOOL_RESULT_HISTORY_CHARS
+        # Find index of the last tool message so we can leave it intact.
+        last_tool_idx = -1
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "tool":
+                last_tool_idx = i
+        result: list[dict[str, Any]] = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "tool" and i != last_tool_idx:
+                content = msg.get("content") or ""
+                if isinstance(content, str) and len(content) > max_chars:
+                    half = max_chars // 2
+                    content = (
+                        content[:half]
+                        + f"\n...[{len(content) - max_chars} chars truncated from history]...\n"
+                        + content[-half:]
+                    )
+                    msg = {**msg, "content": content}
+            result.append(msg)
+        return result
 
     @classmethod
     def _build_structured_response_format(cls) -> dict[str, Any]:
