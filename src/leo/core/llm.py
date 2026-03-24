@@ -185,7 +185,7 @@ class LeoLLMClient:
                 last_error = exc
                 if attempt_number >= self._max_retries or not self._is_retryable_error(exc):
                     break
-                time.sleep(min(4.0, float(2**attempt_number)))
+                time.sleep(min(30.0, float(2**attempt_number)))
 
         assert last_error is not None
         raise LeoLLMException(f"LLM chat completion failed: {str(last_error)}")
@@ -208,5 +208,9 @@ class LeoLLMClient:
                 "rate limit",
                 "server error",
                 "overloaded",
+                "user not found",
+                "service unavailable",
+                "bad gateway",
+                "gateway timeout",
             )
         )

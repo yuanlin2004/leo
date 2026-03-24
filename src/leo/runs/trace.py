@@ -242,7 +242,16 @@ def _render_value(value: Any) -> str:
     if value is None:
         return "-"
     if isinstance(value, str):
-        return value if value else "-"
+        if not value:
+            return "-"
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                parsed = json.loads(stripped)
+                return json.dumps(parsed, indent=2, sort_keys=True)
+            except json.JSONDecodeError:
+                pass
+        return value
     try:
         return json.dumps(value, indent=2, sort_keys=True)
     except TypeError:

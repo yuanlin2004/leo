@@ -116,7 +116,7 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--llm-max-retries",
         type=int,
-        default=int(os.getenv("LEO_LLM_MAX_RETRIES", "1")),
+        default=int(os.getenv("LEO_LLM_MAX_RETRIES", "3")),
         help="Maximum retry attempts for transient LLM request failures.",
     )
     parser.add_argument(

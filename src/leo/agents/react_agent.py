@@ -954,8 +954,14 @@ class ReActAgent(Agent):
                             tool_args,
                         )
                         result = (
-                            "Skipped repeated tool action to avoid loops. "
-                            "Use a different query/arguments or provide Final Answer."
+                            f"[Loop detected] `{tool_name}` with the same arguments has already "
+                            f"been called {self._MAX_REPEAT_ACTIONS} time(s). This call was SKIPPED.\n"
+                            "You are stuck. You MUST change your approach right now:\n"
+                            "1. If you were searching for an API that did not appear, call "
+                            "list_appworld_apis with NO `query` parameter to see ALL APIs for the app.\n"
+                            "2. Use describe_appworld_api to read the docs of any relevant API you find.\n"
+                            "3. Then write and execute code with execute_appworld_code.\n"
+                            "Do NOT search for the same thing again with a slightly different query."
                         )
                     else:
                         try:

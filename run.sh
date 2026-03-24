@@ -7,22 +7,27 @@
 #--provider openrouter \
 #--max-iterations 20
 
-rm -rf /tmp/leo-appworld-runs/appworld-test-normal-base-openrouter-minmax27
+unset OPENROUTER_API_KEY  # let .env take precedence over any stale shell var
+NAME=ollama-oss-20b
+rm -rf /tmp/leo-appworld-runs/appworld-test-normal-base-${NAME}
 #PYTHONPATH=src python -m leo.cli.main evaluate \
 leo evaluate \
   --environment appworld \
   --appworld-root /Users/yuan/Documents/GitHub/appworld \
-  --experiment-name appworld-test-normal-base-openrouter-minmax27 \
+  --experiment-name appworld-test-normal-base-openrouter-${NAME} \
   --output-root /tmp/leo-appworld-runs \
-  --dataset test_normal \
-  --task-limit 5 \
+  --task-id fd1f8fa_1\
   --max-iterations 30 \
   --agent react \
-  --provider openrouter \
-  --model minimax/minimax-m2.7 \
-   2>&1 | tee artifacts/log
+  --provider ollama \
+  --model 'gpt-oss:20b' \
+  --extra-sys-prompt artifacts/code-dict-man.txt \
+  --log-level concise 2>&1 | tee artifacts/log
 
 
+#  --provider openrouter \
+#  --model openai/gpt-oss-20b \
+#  --model minimax/minimax-m2.7 \
 #  --extra-sys-prompt artifacts/code-dict-man.txt \
 #  --log-level concise 2>&1 | tee log
 #  --dataset test_normal \

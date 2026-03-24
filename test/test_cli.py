@@ -111,7 +111,7 @@ def test_parse_args_for_ask_command() -> None:
     assert args.profile == "generic"
     assert args.max_iterations == 10
     assert args.llm_timeout == 90.0
-    assert args.llm_max_retries == 1
+    assert args.llm_max_retries == 3
 
 
 def test_parse_args_uses_nemotron_as_default_model(monkeypatch) -> None:
