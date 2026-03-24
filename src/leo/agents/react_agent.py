@@ -535,7 +535,16 @@ class ReActAgent(Agent):
         if value is None:
             return "-"
         if isinstance(value, str):
-            return value if value else "-"
+            if not value:
+                return "-"
+            stripped = value.strip()
+            if stripped.startswith(("{", "[")):
+                try:
+                    parsed = json.loads(stripped)
+                    return json.dumps(parsed, indent=2, sort_keys=True)
+                except json.JSONDecodeError:
+                    pass
+            return value
         try:
             return json.dumps(value, indent=2, sort_keys=True)
         except TypeError:
@@ -688,7 +697,6 @@ class ReActAgent(Agent):
 
         for iteration in range(max_iterations):
             turn_number = iteration + 1
-            LOGGER.info("Turn %d: calling model", turn_number)
             model_messages = self._build_model_messages(conversation)
             if turn_number == 1:
                 self._log_concise_initial_prompts(model_messages)
@@ -789,35 +797,12 @@ class ReActAgent(Agent):
             assistant_content = structured_response.content or ""
             rendered_response = self._render_structured_response(structured_response)
             LOGGER.info(
-                "Turn %d: model responded latency_ms=%.1f tool_calls=%d content=%s",
+                "Turn %d: model responded latency_ms=%.1f tool_calls=%d",
                 turn_number,
                 llm_elapsed_ms,
                 len(tool_calls),
-                self._preview_text(rendered_response),
-            )
-            LOGGER.debug(
-                "Turn %d: llm_latency_ms=%.1f tool_calls=%d",
-                turn_number,
-                llm_elapsed_ms,
-                len(tool_calls),
-            )
-            LOGGER.debug(
-                "[assistant turn %d] %s",
-                turn_number,
-                self._preview_text(rendered_response),
             )
             self._log_concise_llm_response(rendered_response)
-            if tool_calls:
-                LOGGER.info(
-                    "Turn %d: tool plan=%s",
-                    turn_number,
-                    self._summarize_tool_names(tool_calls),
-                )
-                LOGGER.debug(
-                    "[assistant turn %d tool calls] %s",
-                    turn_number,
-                    ", ".join(tool_call.function.name for tool_call in tool_calls),
-                )
             response_payload = (
                 assistant_message.model_dump()
                 if hasattr(assistant_message, "model_dump")
@@ -861,11 +846,6 @@ class ReActAgent(Agent):
                     final_call_args,
                 )
                 self._log_concise_tool_result("" if final_answer is None else final_answer)
-                LOGGER.info(
-                    "Turn %d: final answer tool received preview=%s",
-                    turn_number,
-                    self._preview_text("" if final_answer is None else final_answer),
-                )
                 LOGGER.info("Returning final answer after %d turns.", turn_number)
                 return final_answer
 
@@ -873,15 +853,7 @@ class ReActAgent(Agent):
                 conversation.append({"role": "assistant", "content": rendered_response})
                 final_answer = self._extract_final_answer(assistant_content)
                 if final_answer:
-                    LOGGER.info(
-                        "Turn %d: final answer detected from text preview=%s",
-                        turn_number,
-                        self._preview_text(final_answer),
-                    )
                     LOGGER.info("Returning final answer after %d turns.", turn_number)
-                    LOGGER.debug(
-                        "Final answer preview: %s", self._preview_text(final_answer)
-                    )
                     return final_answer
                 if not assistant_content.strip():
                     reminder = (
@@ -944,14 +916,14 @@ class ReActAgent(Agent):
                         "Turn %d: executing tool=%s args=%s attempt=%d",
                         turn_number,
                         tool_name,
-                        self._summarize_args(tool_args),
+                        json.dumps(self._summarize_args(tool_args), sort_keys=True),
                         action_counts[action_key],
                     )
                     if action_counts[action_key] > self._MAX_REPEAT_ACTIONS:
                         LOGGER.warning(
                             "Skipping repeated tool action: %s args=%s",
                             tool_name,
-                            tool_args,
+                            json.dumps(self._summarize_args(tool_args), sort_keys=True),
                         )
                         result = (
                             f"[Loop detected] `{tool_name}` with the same arguments has already "
@@ -965,11 +937,6 @@ class ReActAgent(Agent):
                         )
                     else:
                         try:
-                            LOGGER.debug(
-                                "Executing tool '%s' with args=%s",
-                                tool_name,
-                                self._summarize_args(tool_args),
-                            )
                             result = self.tools_registry.execute(tool_name, **tool_args)
                             if tool_name == "activate_skill":
                                 skill_name = tool_args.get("skill_name")
@@ -985,18 +952,11 @@ class ReActAgent(Agent):
                 call_elapsed_ms = (time.perf_counter() - call_start) * 1000
                 formatted_result = self._format_tool_result(result)
                 LOGGER.info(
-                    "Turn %d: tool completed id=%s name=%s latency_ms=%.1f result=%s",
+                    "Turn %d: tool completed name=%s latency_ms=%.1f result=%s",
                     turn_number,
-                    tool_call.id,
                     tool_name,
                     call_elapsed_ms,
                     self._preview_text(formatted_result),
-                )
-                LOGGER.debug(
-                    "Tool completed: id=%s name=%s latency_ms=%.1f",
-                    tool_call.id,
-                    tool_name,
-                    call_elapsed_ms,
                 )
                 LOGGER.log(
                     TRACE_LEVEL,
@@ -1010,12 +970,10 @@ class ReActAgent(Agent):
                 auto_finalized, auto_final_answer = self._extract_auto_final_answer(result)
                 if auto_finalized:
                     LOGGER.info(
-                        "Turn %d: tool=%s requested automatic final answer preview=%s",
+                        "Returning automatic final answer after %d turns. preview=%s",
                         turn_number,
-                        tool_name,
                         self._preview_text("" if auto_final_answer is None else auto_final_answer),
                     )
-                    LOGGER.info("Returning automatic final answer after %d turns.", turn_number)
                     return auto_final_answer
 
                 conversation.append(

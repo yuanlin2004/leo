@@ -638,27 +638,18 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
 
     assert result == "done"
     messages = [record.getMessage() for record in caplog.records]
-    assert any(message == "Turn 1: calling model" for message in messages)
     assert any(
-        "Turn 1: model responded" in message
-        and "tool_calls=1" in message
-        and '"thought": "need data"' in message
+        "Turn 1: model responded" in message and "tool_calls=1" in message
         for message in messages
     )
-    assert any(message == "Turn 1: tool plan=lookup" for message in messages)
     assert any(
         "Turn 1: executing tool=lookup" in message
-        and "args={'query': 'a'}" in message
+        and '"query": "a"' in message
         and "attempt=1" in message
         for message in messages
     )
     assert any(
-        "Turn 1: tool completed id=structured-call-1-1 name=lookup" in message
-        and "result=obs:a" in message
-        for message in messages
-    )
-    assert any(
-        "Turn 2: final answer tool received preview=done" in message
+        "Turn 1: tool completed name=lookup" in message and "result=obs:a" in message
         for message in messages
     )
     assert any(
@@ -685,12 +676,7 @@ def test_react_agent_logs_structured_final_answer_tool(caplog: pytest.LogCapture
 
     assert result == "Draft body here."
     messages = [record.getMessage() for record in caplog.records]
-    assert any(message == "Turn 1: tool plan=final_answer" for message in messages)
-    assert any(
-        "Turn 1: final answer tool received preview=Draft body here."
-        in message
-        for message in messages
-    )
+    assert any(message == "Returning final answer after 1 turns." for message in messages)
 
 
 def test_react_agent_retries_after_empty_non_tool_response() -> None:
@@ -954,7 +940,6 @@ def test_react_agent_logs_same_turn_structured_retry_attempts(
 
     assert result == "done"
     messages = [record.getMessage() for record in caplog.records]
-    assert any(message == "Turn 1: calling model" for message in messages)
     assert any(
         message
         == "Turn 1 attempt 2/3: retrying model after invalid structured response."
