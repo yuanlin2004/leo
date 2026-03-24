@@ -913,3 +913,60 @@ def test_react_agent_recovers_on_next_turn_after_exhausting_empty_placeholder_re
     result = agent.run("do thing", max_iterations=2)
 
     assert result == "done"
+
+
+def test_react_agent_logs_same_turn_structured_retry_attempts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = ToolsRegistry()
+    llm = FakeLLM(
+        responses=[
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="Continuing with the task.",
+                content=None,
+                code=None,
+                tool_calls=[],
+            ),
+            structured_turn(
+                thought="done",
+                tool_calls=[
+                    {"name": "final_answer", "arguments": {"answer": "done"}},
+                ],
+            ),
+        ]
+    )
+    agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
+
+    with caplog.at_level("INFO", logger="leo.agents.react_agent"):
+        result = agent.run("do thing", max_iterations=2)
+
+    assert result == "done"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message == "Turn 1: calling model" for message in messages)
+    assert any(
+        message
+        == "Turn 1 attempt 2/3: retrying model after invalid structured response."
+        for message in messages
+    )
+    assert any(
+        message
+        == "Turn 1 attempt 3/3: retrying model after invalid structured response."
+        for message in messages
+    )
+    assert any(
+        "Turn 1: exhausted 3 structured response attempts; carrying a retry instruction into the next turn."
+        in message
+        for message in messages
+    )

@@ -719,6 +719,13 @@ class ReActAgent(Agent):
             structured_response: ReActStructuredResponse | None = None
             last_error: Exception | None = None
             for attempt_number in range(1, self._MAX_STRUCTURED_RESPONSE_ATTEMPTS + 1):
+                if attempt_number > 1:
+                    LOGGER.warning(
+                        "Turn %d attempt %d/%d: retrying model after invalid structured response.",
+                        turn_number,
+                        attempt_number,
+                        self._MAX_STRUCTURED_RESPONSE_ATTEMPTS,
+                    )
                 llm_start = time.perf_counter()
                 assistant_message, raw_response_content = self._complete_structured_turn(
                     attempt_messages
@@ -765,6 +772,12 @@ class ReActAgent(Agent):
                         "Turn %d: dropping invalid structured response from persistent conversation after exhausting retries.",
                         turn_number,
                     )
+                LOGGER.error(
+                    "Turn %d: exhausted %d structured response attempts; carrying a retry instruction into the next turn. last_error=%s",
+                    turn_number,
+                    self._MAX_STRUCTURED_RESPONSE_ATTEMPTS,
+                    last_error,
+                )
                 conversation.append(
                     {
                         "role": "user",
