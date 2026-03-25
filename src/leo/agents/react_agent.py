@@ -1,5 +1,7 @@
+import datetime
 import json
 import logging
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -15,6 +17,21 @@ from .agent import Agent
 from .session import AgentSession
 
 LOGGER = logging.getLogger("leo.agents.react_agent")
+
+# Capture a reference to the real datetime.now before any external library
+# (e.g. freezegun used by AppWorld) can patch datetime.datetime.
+# NOTE: time.perf_counter() cannot be bypassed the same way — freezegun patches
+# it such that even a module-level captured reference returns frozen time.
+# Instead, use _real_datetime_now().timestamp() for elapsed-time measurements;
+# datetime.datetime.now is patched at the class level (datetime.datetime →
+# FakeDatetime), so a captured reference to the original method still resolves
+# through the original (unfrozen) implementation.
+_real_datetime_now = datetime.datetime.now
+
+
+def _real_now_secs() -> float:
+    """Return real wall-clock seconds (float), bypassing freezegun."""
+    return _real_datetime_now().timestamp()
 
 
 @dataclass(frozen=True)
@@ -106,7 +123,7 @@ class ReActAgent(Agent):
     """
 
     _MAX_REPEAT_ACTIONS = 3
-    _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 3
+    _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 5
     _MAX_LOG_PREVIEW_CHARS = 200
     _FINAL_ANSWER_TOOL_NAME = "final_answer"
     _STRUCTURED_RESPONSE_FORMAT_NAME = "react_agent_turn"
@@ -149,9 +166,6 @@ class ReActAgent(Agent):
         self._knowledge_top_k = knowledge_top_k
 
         system_prompt = REACT_AGENT_SYSTEM_PROMPT_BASE
-        system_prompt += "The following tools are available to you:"
-        for tool_name, tool_desc in self.tools_registry.get_all_tools().items():
-            system_prompt += f"\n- {tool_name}: {tool_desc}"
         if extra_system_prompt:
             system_prompt += extra_system_prompt
 
@@ -223,6 +237,12 @@ class ReActAgent(Agent):
     @staticmethod
     def _summarize_tool_result(result: Any) -> str:
         if isinstance(result, dict):
+            # Structured execution output produced by the AppWorld adapter:
+            # re-join the parts cleanly so the LLM sees combined output with
+            # no internal sentinel noise.
+            if "__stdout__" in result or "__return_value__" in result:
+                parts = [result.get("__stdout__", ""), result.get("__return_value__", "")]
+                return "\n".join(p for p in parts if p)
             nested_result = result.get("result")
             code = result.get("code")
             if nested_result is not None and isinstance(code, str):
@@ -247,7 +267,8 @@ class ReActAgent(Agent):
         summary: dict[str, Any] = {}
         for key, value in tool_args.items():
             if isinstance(value, str):
-                summary[key] = value if len(value) <= 80 else f"{value[:77]}..."
+                # Never truncate code — it needs to be readable in logs.
+                summary[key] = value if key == "code" or len(value) <= 80 else f"{value[:77]}..."
             elif isinstance(value, (int, float, bool)) or value is None:
                 summary[key] = value
             elif isinstance(value, list):
@@ -556,11 +577,17 @@ class ReActAgent(Agent):
         if not isinstance(raw_tool_call, dict):
             raise ValueError("Tool call entries must be objects.")
         if isinstance(raw_tool_call.get("name"), str):
+            if "arguments" not in raw_tool_call:
+                # Flat argument format: model emitted args directly in the tool call
+                # object instead of nesting them under "arguments".
+                # e.g. {"name": "execute_appworld_code", "code": "..."}
+                flat_args = {k: v for k, v in raw_tool_call.items() if k != "name"}
+                arguments = flat_args if flat_args else {}
+            else:
+                arguments = cls._coerce_tool_call_arguments(raw_tool_call.get("arguments"))
             return {
                 "name": raw_tool_call["name"],
-                "arguments": cls._coerce_tool_call_arguments(
-                    raw_tool_call.get("arguments")
-                ),
+                "arguments": arguments,
             }
         function_payload = raw_tool_call.get("function")
         if not isinstance(function_payload, dict):
@@ -657,7 +684,28 @@ class ReActAgent(Agent):
         return json.dumps(response.model_dump(exclude_none=False), indent=2, sort_keys=True)
 
     @staticmethod
-    def _build_structured_retry_message(error: Exception) -> str:
+    def _extract_raw_from_llm_error(error_message: str) -> str:
+        """Extract raw model output from an Ollama 'error parsing tool call' 500 message.
+
+        Ollama returns errors of the form:
+            error parsing tool call: raw='<model output>', err=<parse error>
+
+        Single quotes inside the raw content are backslash-escaped by Ollama.
+        """
+        m = re.search(r"raw='((?:[^'\\]|\\.)*)'", error_message, re.DOTALL)
+        if not m:
+            return ""
+        return m.group(1).replace("\\'", "'")
+
+    @staticmethod
+    def _build_structured_retry_message(error: Exception, is_final: bool = False) -> str:
+        if is_final:
+            return (
+                "Your previous response did not match the required JSON schema. "
+                "You must act now: either call a tool via `tool_calls` or emit `final_answer` with your best answer. "
+                "Do NOT output a response with all null/empty action fields. "
+                f"Validation error: {error}"
+            )
         return (
             "Your previous response did not match the required JSON schema. "
             "Return exactly one JSON object with keys `thought`, `content`, `code`, and `tool_calls`. "
@@ -680,6 +728,81 @@ class ReActAgent(Agent):
             and cls._is_blank_text(response.content)
             and cls._is_blank_text(response.code)
         )
+
+    _STRUCTURED_SCHEMA_KEYS = frozenset({"thought", "content", "code", "tool_calls"})
+
+    def _try_recover_bare_tool_arg_response(
+        self,
+        raw_content: str,
+    ) -> ReActStructuredResponse | None:
+        """Attempt to recover a valid structured response from a bare tool-argument dict.
+
+        Some OSS models (e.g. Qwen-20B via Ollama) output the raw arguments of a
+        tool call as a flat JSON object — e.g. ``{"app_name": "venmo", "max_results": 50}``
+        — instead of wrapping them in the required ``{thought, content, code, tool_calls}``
+        structure.  This method detects that pattern and reconstructs a proper
+        ``ReActStructuredResponse`` by matching the argument keys against every
+        registered tool schema.
+
+        Returns the recovered response, or ``None`` if no unambiguous match is found.
+        """
+        text = self._strip_code_fences(raw_content or "")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict) or not payload:
+            return None
+        # If the dict contains any structured-schema key it is NOT a bare tool arg.
+        if payload.keys() & self._STRUCTURED_SCHEMA_KEYS:
+            return None
+
+        arg_keys = set(payload.keys())
+
+        # Build a map of tool_name -> set of all parameter names (required + optional).
+        all_schemas = list(self.tools_registry.get_tool_schemas())
+        all_schemas.append(self._FINAL_ANSWER_TOOL_SCHEMA)
+        matches: list[str] = []
+        for schema in all_schemas:
+            fn = schema.get("function", {})
+            tool_name = fn.get("name", "")
+            params = fn.get("parameters", {})
+            properties = params.get("properties", {})
+            required = set(params.get("required", []))
+            allowed_keys = set(properties.keys())
+            # The arg keys must all be valid params, and all required params must be present.
+            if arg_keys <= allowed_keys and required <= arg_keys:
+                matches.append(tool_name)
+
+        if len(matches) != 1:
+            # Ambiguous or no match — cannot recover safely.
+            LOGGER.debug(
+                "Bare tool-arg recovery: %d candidate tool(s) for keys %s; skipping.",
+                len(matches),
+                sorted(arg_keys),
+            )
+            return None
+
+        tool_name = matches[0]
+        LOGGER.warning(
+            "Bare tool-arg recovery: inferred tool=%r from bare argument keys %s.",
+            tool_name,
+            sorted(arg_keys),
+        )
+        try:
+            return ReActStructuredResponse.model_validate(
+                self._normalize_structured_payload(
+                    {
+                        "thought": f"Calling {tool_name}.",
+                        "content": None,
+                        "code": None,
+                        "tool_calls": [{"name": tool_name, "arguments": payload}],
+                    }
+                )
+            )
+        except (ValidationError, ValueError) as exc:
+            LOGGER.debug("Bare tool-arg recovery: constructed response failed validation: %s", exc)
+            return None
 
     @classmethod
     def _build_structured_tool_calls(
@@ -707,11 +830,14 @@ class ReActAgent(Agent):
     def _complete_structured_turn(
         self,
         messages: list[dict[str, Any]],
+        temperature: float | None = None,
     ) -> tuple[Any, str]:
         # Tools are described in the system prompt; do not pass them as native
         # API tools — that activates provider-side tool-call parsing which
         # conflicts with our structured JSON output format.
-        request_kwargs = {"response_format": self._build_structured_response_format()}
+        request_kwargs: dict[str, Any] = {"response_format": self._build_structured_response_format()}
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
         try:
             assistant_message = self.llm.complete(
                 messages=messages,
@@ -720,10 +846,30 @@ class ReActAgent(Agent):
             )
             return assistant_message, assistant_message.content or ""
         except LeoLLMException as exc:
-            LOGGER.warning(
-                "Structured response_format request failed; retrying without response_format. error=%s",
-                exc,
-            )
+            error_str = str(exc)
+            if "error parsing tool call" in error_str:
+                # Ollama failed to parse the model output as a native tool call
+                # and embeds the raw model response in the error message.  Only
+                # use it when it actually looks like a Leo structured response
+                # (contains "thought"); otherwise it is Ollama's partial
+                # argument extraction, which is not usable as a response.
+                raw = self._extract_raw_from_llm_error(error_str)
+                if raw and '"thought"' in raw:
+                    LOGGER.warning(
+                        "Recovering model output from Ollama tool-call interception. error=%s",
+                        exc,
+                    )
+                    return None, raw
+                LOGGER.warning(
+                    "Ollama tool-call parse error; raw fragment is not a full response "
+                    "(no 'thought' key) — retrying without response_format. error=%s",
+                    exc,
+                )
+            else:
+                LOGGER.warning(
+                    "Structured response_format request failed; retrying without response_format. error=%s",
+                    exc,
+                )
         assistant_message = self.llm.complete(messages=messages, tools=None)
         return assistant_message, assistant_message.content or ""
 
@@ -819,22 +965,34 @@ class ReActAgent(Agent):
             return "-", total_count
         return "\n\n".join(new_messages), total_count
 
+    _TURN_WIDTH = 72
+
+    @classmethod
+    def _fmt_banner(cls, label: str, char: str = "═") -> str:
+        """Return a full-width banner:  ══════ LABEL ══════"""
+        inner = f" {label} "
+        pad = max(0, cls._TURN_WIDTH - len(inner))
+        left = pad // 2
+        right = pad - left
+        return char * left + inner + char * right
+
     def _log_concise_initial_prompts(self, messages: list[dict[str, Any]]) -> None:
         if not LOGGER.isEnabledFor(CONCISE_LEVEL):
             return
+        LOGGER.log(CONCISE_LEVEL, self._fmt_banner("SYSTEM PROMPT", "─"))
         LOGGER.log(
             CONCISE_LEVEL,
-            "Initial System Prompt:\n%s",
+            "%s",
             self._extract_role_prompts(messages, "system"),
         )
+        assistant_prompt = self._extract_role_prompts(messages, "assistant")
+        if assistant_prompt != "-":
+            LOGGER.log(CONCISE_LEVEL, self._fmt_banner("INITIAL ASSISTANT", "─"))
+            LOGGER.log(CONCISE_LEVEL, "%s", assistant_prompt)
+        LOGGER.log(CONCISE_LEVEL, self._fmt_banner("INITIAL USER PROMPT", "─"))
         LOGGER.log(
             CONCISE_LEVEL,
-            "Initial Assistant Prompt:\n%s",
-            self._extract_role_prompts(messages, "assistant"),
-        )
-        LOGGER.log(
-            CONCISE_LEVEL,
-            "Initial User Prompt:\n%s",
+            "%s",
             self._extract_role_prompts(messages, "user"),
         )
 
@@ -846,33 +1004,71 @@ class ReActAgent(Agent):
     ) -> None:
         if not LOGGER.isEnabledFor(CONCISE_LEVEL):
             return
-        if turn_number > 1:
-            LOGGER.log(CONCISE_LEVEL, "===============")
-            LOGGER.log(CONCISE_LEVEL, "")
-        LOGGER.log(CONCISE_LEVEL, "Turn %d", turn_number)
+        ts = _real_datetime_now().strftime("%H:%M:%S")
+        LOGGER.log(CONCISE_LEVEL, "")
+        LOGGER.log(CONCISE_LEVEL, self._fmt_banner(f"TURN {turn_number}  {ts}"))
         user_prompt, _ = self._extract_new_role_prompts(
             messages,
             "user",
             seen_user_prompt_count,
         )
         if user_prompt != "-":
-            LOGGER.log(CONCISE_LEVEL, "User Prompt:\n%s", user_prompt)
+            LOGGER.log(CONCISE_LEVEL, "[USER]\n%s", user_prompt)
 
     def _log_concise_llm_response(self, content: str | None) -> None:
         if not LOGGER.isEnabledFor(CONCISE_LEVEL):
             return
-        LOGGER.log(CONCISE_LEVEL, "LLM:\n%s", self._render_concise_value(content))
+        # Parse the structured response JSON and format each field clearly.
+        try:
+            parsed = json.loads(content or "")
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
 
-    def _log_concise_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> None:
+        if isinstance(parsed, dict):
+            thought = (parsed.get("thought") or "").strip()
+            text_content = (parsed.get("content") or "").strip()
+            code = (parsed.get("code") or "").strip()
+            tool_calls: list[Any] = parsed.get("tool_calls") or []
+
+            if thought:
+                LOGGER.log(CONCISE_LEVEL, "[THOUGHT] %s", thought)
+            if text_content:
+                LOGGER.log(CONCISE_LEVEL, "[CONTENT] %s", text_content)
+            if code:
+                LOGGER.log(CONCISE_LEVEL, "[CODE]\n%s", self._indent_code_block(code))
+            if tool_calls:
+                names = ", ".join(
+                    tc.get("name", "?") if isinstance(tc, dict) else "?"
+                    for tc in tool_calls
+                )
+                LOGGER.log(CONCISE_LEVEL, "[CALLS] %s", names)
+        else:
+            LOGGER.log(CONCISE_LEVEL, "[LLM]\n%s", self._render_concise_value(content))
+
+    def _log_concise_tool_call(
+        self, tool_name: str, tool_args: dict[str, Any], attempt: int = 1
+    ) -> None:
         if not LOGGER.isEnabledFor(CONCISE_LEVEL):
             return
-        LOGGER.log(CONCISE_LEVEL, "Tool Call:\n%s", tool_name)
-        LOGGER.log(CONCISE_LEVEL, "Arguments:\n%s", self._render_concise_tool_args(tool_args))
+        LOGGER.log(CONCISE_LEVEL, "[CALL] %s attempt=%d", tool_name, attempt)
+        LOGGER.log(CONCISE_LEVEL, "[ARGS]\n%s", self._render_concise_tool_args(tool_args))
 
     def _log_concise_tool_result(self, result: Any) -> None:
         if not LOGGER.isEnabledFor(CONCISE_LEVEL):
             return
-        LOGGER.log(CONCISE_LEVEL, "Result:\n%s", self._render_concise_value(result))
+        if isinstance(result, dict) and (
+            "__stdout__" in result or "__return_value__" in result
+        ):
+            stdout = result.get("__stdout__", "")
+            return_val = result.get("__return_value__", "")
+            if stdout:
+                LOGGER.log(CONCISE_LEVEL, "[STDOUT]\n%s", self._render_concise_value(stdout))
+            if return_val:
+                LOGGER.log(CONCISE_LEVEL, "[RETURN]\n%s", self._render_concise_value(return_val))
+            elif not stdout:
+                LOGGER.log(CONCISE_LEVEL, "[OUTPUT] (empty)")
+        else:
+            LOGGER.log(CONCISE_LEVEL, "[OUTPUT]\n%s", self._render_concise_value(result))
 
     def _run_loop(
         self,
@@ -911,12 +1107,23 @@ class ReActAgent(Agent):
                 "user",
                 seen_user_prompt_count,
             )
-            LOGGER.log(
-                TRACE_LEVEL,
-                "[request turn %d messages]\n%s",
-                turn_number,
-                json.dumps(model_messages, indent=2, default=str),
-            )
+            # At TRACE level log only the tail of the message history — the
+            # new messages since the previous turn (not the full history which
+            # Log a compact context summary (not the full history — each
+            # piece is already captured by [THOUGHT]/[→]/[←] in prior turns).
+            if LOGGER.isEnabledFor(TRACE_LEVEL):
+                role_counts: dict[str, int] = {}
+                for m in model_messages:
+                    r = str(m.get("role") or "").strip()
+                    role_counts[r] = role_counts.get(r, 0) + 1
+                summary = ", ".join(f"{r}×{n}" for r, n in sorted(role_counts.items()))
+                LOGGER.log(
+                    TRACE_LEVEL,
+                    "[request turn %d context] %d messages (%s)",
+                    turn_number,
+                    len(model_messages),
+                    summary,
+                )
             attempt_messages = list(model_messages)
             assistant_message = None
             raw_response_content = ""
@@ -931,20 +1138,71 @@ class ReActAgent(Agent):
                         attempt_number,
                         self._MAX_STRUCTURED_RESPONSE_ATTEMPTS,
                     )
-                llm_start = time.perf_counter()
-                assistant_message, raw_response_content = self._complete_structured_turn(
-                    attempt_messages
-                )
-                llm_elapsed_ms = (time.perf_counter() - llm_start) * 1000
+                # Use slightly elevated temperature on retries to break out of
+                # deterministic loops (e.g. temperature=0 always produces the same
+                # empty response). Apply a minimum temperature floor on all attempts
+                # for providers/models known to produce thought-only or bare-argument
+                # empty responses at temperature=0.
+                llm_provider = getattr(self.llm, "provider", None)
+                if attempt_number > 1 or llm_provider in ("openrouter", "ollama"):
+                    retry_temperature = 0.3
+                else:
+                    retry_temperature = None
+                llm_start = _real_now_secs()
+                try:
+                    assistant_message, raw_response_content = self._complete_structured_turn(
+                        attempt_messages, temperature=retry_temperature
+                    )
+                except LeoLLMException as llm_exc:
+                    # Ollama (and some other providers) return HTTP 500 when the
+                    # model outputs something that can't be parsed as a native tool
+                    # call (e.g. raw Python, a comment, or bare JSON).  Treat this
+                    # as a retryable format failure rather than a fatal crash.
+                    raw_response_content = self._extract_raw_from_llm_error(str(llm_exc))
+                    assistant_message = None
+                    last_error = ValueError(f"LLM provider error (bad model output): {llm_exc}")
+                    LOGGER.warning(
+                        "Turn %d attempt %d: LLM provider error treated as retryable format failure: %s",
+                        turn_number,
+                        attempt_number,
+                        llm_exc,
+                    )
+                    if attempt_number == self._MAX_STRUCTURED_RESPONSE_ATTEMPTS:
+                        break
+                    is_final_attempt = (
+                        attempt_number == self._MAX_STRUCTURED_RESPONSE_ATTEMPTS - 1
+                    )
+                    attempt_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": raw_response_content,
+                        }
+                    )
+                    attempt_messages.append(
+                        {
+                            "role": "user",
+                            "content": self._build_structured_retry_message(
+                                last_error, is_final=is_final_attempt
+                            ),
+                        }
+                    )
+                    continue
+                llm_elapsed_ms = (_real_now_secs() - llm_start) * 1000
                 try:
                     candidate_response = self._parse_structured_response(
                         raw_response_content,
                         assistant_message=assistant_message,
                     )
                     if self._is_effectively_empty_structured_response(candidate_response):
-                        raise ValueError(
-                            "Structured response was empty: content, code, and tool_calls were all empty."
-                        )
+                        # Before giving up, try to recover a bare tool-argument dict
+                        # that the model emitted without the required wrapper schema.
+                        recovered = self._try_recover_bare_tool_arg_response(raw_response_content)
+                        if recovered is not None:
+                            candidate_response = recovered
+                        else:
+                            raise ValueError(
+                                "Structured response was empty: content, code, and tool_calls were all empty."
+                            )
                 except ValueError as exc:
                     last_error = exc
                     LOGGER.warning(
@@ -955,6 +1213,9 @@ class ReActAgent(Agent):
                     )
                     if attempt_number == self._MAX_STRUCTURED_RESPONSE_ATTEMPTS:
                         break
+                    is_final_attempt = (
+                        attempt_number == self._MAX_STRUCTURED_RESPONSE_ATTEMPTS - 1
+                    )
                     attempt_messages.append(
                         {
                             "role": "assistant",
@@ -964,7 +1225,9 @@ class ReActAgent(Agent):
                     attempt_messages.append(
                         {
                             "role": "user",
-                            "content": self._build_structured_retry_message(exc),
+                            "content": self._build_structured_retry_message(
+                                exc, is_final=is_final_attempt
+                            ),
                         }
                     )
                     continue
@@ -1000,23 +1263,32 @@ class ReActAgent(Agent):
                 len(tool_calls),
             )
             self._log_concise_llm_response(rendered_response)
-            response_payload = (
-                assistant_message.model_dump()
-                if hasattr(assistant_message, "model_dump")
-                else {
-                    "content": raw_response_content,
-                    "tool_calls": [],
-                }
-            )
-            response_payload["structured_response"] = structured_response.model_dump(
-                exclude_none=False
-            )
-            LOGGER.log(
-                TRACE_LEVEL,
-                "[assistant turn %d full response]\n%s",
-                turn_number,
-                json.dumps(response_payload, indent=2, default=str),
-            )
+            # At TRACE level log only the non-redundant parts of the raw model
+            # message: the model's internal reasoning (if any) and the raw text
+            # content only when it differs meaningfully from the structured
+            # response already printed by _log_concise_llm_response.
+            if LOGGER.isEnabledFor(TRACE_LEVEL):
+                reasoning = (
+                    getattr(assistant_message, "reasoning", None)
+                    if assistant_message is not None
+                    else None
+                )
+                if reasoning:
+                    LOGGER.log(
+                        TRACE_LEVEL,
+                        "[reasoning turn %d]\n%s",
+                        turn_number,
+                        reasoning,
+                    )
+                raw_content_str = (raw_response_content or "").strip()
+                rendered_str = (rendered_response or "").strip()
+                if raw_content_str and raw_content_str != rendered_str:
+                    LOGGER.log(
+                        TRACE_LEVEL,
+                        "[raw model output turn %d]\n%s",
+                        turn_number,
+                        raw_content_str,
+                    )
 
             if (
                 len(tool_calls) == 1
@@ -1087,7 +1359,8 @@ class ReActAgent(Agent):
             # Execute all tool calls returned in this assistant turn.
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
-                call_start = time.perf_counter()
+                call_start = _real_now_secs()
+                attempt = 0
                 try:
                     tool_args = self._parse_tool_args(tool_call.function.arguments)
                 except Exception as exc:
@@ -1099,22 +1372,16 @@ class ReActAgent(Agent):
                         exc,
                     )
                 else:
-                    LOGGER.log(
-                        TRACE_LEVEL,
-                        "[tool input] id=%s name=%s args=%s",
-                        tool_call.id,
-                        tool_name,
-                        json.dumps(tool_args, indent=2, default=str, sort_keys=True),
-                    )
-                    self._log_concise_tool_call(tool_name, tool_args)
                     action_key = self._build_action_key(tool_name, tool_args)
                     action_counts[action_key] = action_counts.get(action_key, 0) + 1
-                    LOGGER.info(
+                    attempt = action_counts[action_key]
+                    LOGGER.log(
+                        TRACE_LEVEL,
                         "Turn %d: executing tool=%s args=%s attempt=%d",
                         turn_number,
                         tool_name,
                         json.dumps(self._summarize_args(tool_args), sort_keys=True),
-                        action_counts[action_key],
+                        attempt,
                     )
                     if action_counts[action_key] > self._MAX_REPEAT_ACTIONS:
                         LOGGER.warning(
@@ -1146,23 +1413,18 @@ class ReActAgent(Agent):
                                 tool_name,
                                 exc,
                             )
-                call_elapsed_ms = (time.perf_counter() - call_start) * 1000
+                call_elapsed_ms = (_real_now_secs() - call_start) * 1000
                 formatted_result = self._format_tool_result(result)
-                LOGGER.info(
+                LOGGER.log(
+                    TRACE_LEVEL,
                     "Turn %d: tool completed name=%s latency_ms=%.1f result=%s",
                     turn_number,
                     tool_name,
                     call_elapsed_ms,
                     self._preview_text(formatted_result),
                 )
-                LOGGER.log(
-                    TRACE_LEVEL,
-                    "[tool result] id=%s name=%s content=%s",
-                    tool_call.id,
-                    tool_name,
-                    formatted_result,
-                )
-                self._log_concise_tool_result(formatted_result)
+                self._log_concise_tool_call(tool_name, tool_args, attempt=attempt)
+                self._log_concise_tool_result(result)
 
                 auto_finalized, auto_final_answer = self._extract_auto_final_answer(result)
                 if auto_finalized:

@@ -101,8 +101,8 @@ class LeoLLMClient:
                 "Missing dependency: openai. Install it with `pip install openai`."
             ) from exc
 
-        self._model = model 
-        self._provider = provider.lower() 
+        self._model = model
+        self._provider = provider.lower()
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
@@ -131,7 +131,11 @@ class LeoLLMClient:
             raise LeoLLMException(f"Unsupported LLM provider: {self._provider}")
 
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=self._timeout)
-    
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
     def invoke(
         self,
         messages: list[dict[str, Any]],
@@ -157,7 +161,10 @@ class LeoLLMClient:
         **kwargs,
     ) -> Any:
         request_kwargs = dict(kwargs)
-        if self._provider == "ollama":
+        if self._provider in ("ollama", "openrouter"):
+            # response_format JSON schema causes these providers to generate
+            # minimal schema-valid responses (e.g. thought-only, empty actions).
+            # Both rely on prompt-based format instructions instead.
             request_kwargs.pop("response_format", None)
         request = dict(
             model=self._model,

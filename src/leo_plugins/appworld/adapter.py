@@ -123,21 +123,21 @@ class AppWorldEnvironment(TaskEnvironment):
         if self._context is None:
             raise EnvironmentIntegrationError("AppWorld task context is unavailable.")
         lines = [
-            "Active AppWorld context summary. Only public task data is available.",
             f"Task ID: {self._context.task_id}",
-            f"Goal: {self._context.instruction}",
         ]
         if self._context.required_apps:
             lines.append(
                 "Required apps: " + ", ".join(self._context.required_apps) + "."
             )
         supervisor_parts = [
-            f"email={self._context.supervisor['email']}"
-            if self._context.supervisor.get("email")
-            else "",
-            f"phone_number={self._context.supervisor['phone_number']}"
-            if self._context.supervisor.get("phone_number")
-            else "",
+            f"email={self._context.supervisor[key]}"
+            if key == "email" and self._context.supervisor.get(key)
+            else f"phone_number={self._context.supervisor[key]}"
+            if key == "phone_number" and self._context.supervisor.get(key)
+            else f"{key}={self._context.supervisor[key]}"
+            if self._context.supervisor.get(key)
+            else ""
+            for key in ("email", "phone_number", "first_name", "last_name")
         ]
         supervisor_parts = [part for part in supervisor_parts if part]
         if supervisor_parts:
@@ -419,7 +419,8 @@ class AppWorldEnvironment(TaskEnvironment):
                     "snippet": executable_code,
                 },
             )
-            return _augment_execution_failure_hint(_normalize_external_payload(result))
+            augmented = _augment_execution_failure_hint(_normalize_external_payload(result))
+            return _split_execution_output(augmented)
 
         scripted = self._task_payload.get("execution_responses")
         if isinstance(scripted, Mapping):
@@ -1418,6 +1419,28 @@ def _augment_execution_failure_hint(result: Any) -> Any:
     return result
 
 
+def _split_execution_output(result: Any) -> Any:
+    """Split a raw execution output string into stdout and return-value parts.
+
+    When *_ensure_observable_code* successfully transforms the code, it prints
+    *_RETURN_VALUE_SENTINEL* immediately before auto-echoing the last expression.
+    If the sentinel is present we return a dict with ``__stdout__`` and
+    ``__return_value__`` keys so callers can display them separately.
+    On failure or when the sentinel is absent we return the original value
+    unchanged so callers fall back to plain ``[OUTPUT]`` display.
+    """
+    if not isinstance(result, str):
+        return result
+    split_marker = _RETURN_VALUE_SENTINEL + "\n"
+    if split_marker not in result:
+        return result
+    stdout_part, return_part = result.split(split_marker, 1)
+    return {
+        "__stdout__": stdout_part.rstrip("\n"),
+        "__return_value__": return_part.rstrip("\n"),
+    }
+
+
 def _looks_like_syntax_failure(value: str) -> bool:
     text = value.lstrip()
     return text.startswith("Execution failed.") and "Syntax error" in text
@@ -1511,6 +1534,21 @@ def _tokenize_text(value: str) -> list[str]:
     ]
 
 
+# Sentinel printed immediately before the auto-echoed return value so that
+# execute_task_code can split the combined stdout string into the explicit
+# print() output and the auto-echoed return value.  A null byte makes
+# accidental collision with real API data practically impossible.
+_RETURN_VALUE_SENTINEL = "\x00__RETURN__\x00"
+
+
+def _is_print_call(node: ast.expr) -> bool:
+    """Return True if *node* is a direct call to ``print`` or ``pprint``."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return isinstance(func, ast.Name) and func.id in ("print", "pprint")
+
+
 def _ensure_observable_code(code: str) -> str:
     try:
         tree = ast.parse(code, mode="exec")
@@ -1521,12 +1559,25 @@ def _ensure_observable_code(code: str) -> str:
     last_statement = tree.body[-1]
     if not isinstance(last_statement, ast.Expr):
         return code
-    call = ast.Call(
+    # If the last expression is already a print() call the output is all
+    # stdout — do not wrap it again and do not add the sentinel.
+    if _is_print_call(last_statement.value):
+        return code
+    # For a bare expression (e.g. an API call), print the sentinel on its own
+    # line then auto-echo the expression so callers can split stdout from the
+    # return value.
+    sentinel_call = ast.Call(
+        func=ast.Name(id="print", ctx=ast.Load()),
+        args=[ast.Constant(value=_RETURN_VALUE_SENTINEL)],
+        keywords=[],
+    )
+    return_call = ast.Call(
         func=ast.Name(id="print", ctx=ast.Load()),
         args=[last_statement.value],
         keywords=[],
     )
-    tree.body[-1] = ast.Expr(value=call)
+    tree.body[-1] = ast.Expr(value=sentinel_call)
+    tree.body.append(ast.Expr(value=return_call))
     ast.fix_missing_locations(tree)
     try:
         return ast.unparse(tree)

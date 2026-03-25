@@ -223,17 +223,7 @@ def test_run_appworld_tasks_direct_path_with_fake_appworld_module(
     assert result.final_answer == "final appworld answer"
     assert result.evaluation == {"evaluated": True, "passed": True, "task_id": "task-direct-1"}
     assert result.concise_trace_path is not None
-    assert prompts == [
-        "\n".join(
-            [
-                "Solve the active AppWorld task using the provided environment context and tools.",
-                "The public task context is already included above; do not call get_environment_task_context unless you need to verify a later change or re-check one specific field.",
-                "Task ID: task-direct-1",
-                "Goal: Resolve the customer billing issue.",
-                "Return the full final answer via final_answer.",
-            ]
-        )
-    ]
+    assert prompts == ["Goal: Resolve the customer billing issue."]
     assert Path(result.artifact_dir, "final_answer.txt").read_text(encoding="utf-8") == "final appworld answer"
     saved_config = json.loads(Path(result.artifact_dir, "config.json").read_text(encoding="utf-8"))
     assert saved_config["environment"] == "appworld"
@@ -411,25 +401,17 @@ def test_run_appworld_tasks_accepts_null_final_answer(
 
 def test_appworld_prompt_supplement_mentions_apis_and_print() -> None:
     assert "closed simulated environment" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "`apis` object" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "`apis.<app_name>.<api_name>(...)`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "do not invent `apps`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "do not call get_environment_task_context at the start" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Do not guess API names or parameters" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "list_appworld_apis" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "describe_appworld_api" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "first execute_appworld_code snippet should usually happen by turn 3" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "task_plan_hint" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "execute_appworld_code" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "do not use execute_python" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "short, linear snippets" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Use print(...)" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "do not retype access tokens" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "Treat documented parameters as exact" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "`exit()`" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "page_limit at 20" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Interpret ranking words literally" in APPWORLD_RUN_PROMPT_SUPPLEMENT
-    assert "playlist library and liked playlists" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "Aggregate across all relevant records" in APPWORLD_RUN_PROMPT_SUPPLEMENT
     assert "answer=null" in APPWORLD_RUN_PROMPT_SUPPLEMENT
 
@@ -451,14 +433,12 @@ def test_build_appworld_user_prompt_adds_metric_guidance() -> None:
         }
     )
 
-    assert "Public task signals: library_name=playlists, metric_adjective=liked, most_least=most." in prompt
-    assert "Supervisor identity: email=joyce-weav@gmail.com, phone_number=4436271690." in prompt
-    assert "Use these exact supervisor identifiers for app login when relevant; do not guess alternate usernames." in prompt
+    # Task data (supervisor, public signals) is now in render_prompt_context(), not the user prompt.
+    assert "Supervisor" not in prompt
+    assert "Public task signals" not in prompt
+    # Ranking guidance stays in the user prompt (task-specific).
     assert "Ranking rule: use the `liked` metric literally. Do not substitute a different metric." in prompt
-    assert (
-        "For this task, prefer explicit like metrics such as `like_count`; do not rank by `play_count`, frequency, or occurrences in playlists."
-        in prompt
-    )
+    assert "Prefer `like_count`" in prompt
 
 
 def test_build_appworld_user_prompt_includes_mutation_public_signals() -> None:
@@ -479,11 +459,10 @@ def test_build_appworld_user_prompt_includes_mutation_public_signals() -> None:
         }
     )
 
-    assert (
-        "Public task signals: change_type=increase, current_rating_direction=lower, library_name=playlists, liked_status=liked, target_rating=5."
-        in prompt
-    )
-    assert "Goal: Give a 5-star rating to all songs in my Spotify playlists which I have liked." in prompt
+    # Task data (public signals) is now in render_prompt_context(), not the user prompt.
+    assert "Public task signals" not in prompt
+    # Goal IS in the user prompt so the model sees the instruction directly.
+    assert "Goal:" in prompt
 
 
 def test_build_appworld_user_prompt_includes_initial_app_hint() -> None:
@@ -517,16 +496,11 @@ def test_build_appworld_user_prompt_includes_initial_app_hint() -> None:
         },
     )
 
-    assert (
-        "Initial AppWorld hint for your next execute_appworld_code snippet: plan to call `apis.supervisor.show_account_passwords(...)`, `apis.spotify.login(...)`, `apis.spotify.show_playlist_library(...)`. These are AppWorld APIs to use inside code, not Leo tool names."
-        in prompt
-    )
-    assert (
-        "Initial auth hint inside code: use `apis.supervisor.show_account_passwords(...)` -> `apis.spotify.login(...)`."
-        in prompt
-    )
-    assert "Initial answer-format hint: Return only the bare answer value." in prompt
-    assert "Do not call list_appworld_apis unless a later tool result shows the hint is missing something important." in prompt
+    assert "Initial hint: plan to call `apis.supervisor.show_account_passwords(...)`" in prompt
+    assert "`apis.spotify.login(...)`" in prompt
+    assert "`apis.spotify.show_playlist_library(...)`" in prompt
+    assert "Auth path: `apis.supervisor.show_account_passwords(...)` -> `apis.spotify.login(...)`." in prompt
+    assert "Answer format: Return only the bare answer value." in prompt
 
 
 def test_run_appworld_tasks_does_not_write_concise_trace_by_default(
@@ -714,7 +688,7 @@ def test_run_appworld_tasks_applies_extra_prompt_files_to_system_and_user_prompt
     assert summary.evaluation_passed is None
     assert summary.evaluation_failed is None
     assert "Extra system guidance." in str(captured["extra_system_prompt"])
-    assert prompts and prompts[0].startswith("Extra user guidance.\n\nSolve the active AppWorld task")
+    assert prompts and prompts[0].startswith("Extra user guidance.\n\nGoal: Resolve the customer billing issue.")
 
 
 def test_run_appworld_summary_separates_run_success_from_evaluation_failure(

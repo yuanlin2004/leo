@@ -214,8 +214,9 @@ def test_react_agent_injects_public_environment_context_only() -> None:
         for message in llm.messages[0]
         if message.get("role") == "system"
     ]
-    assert any("Active AppWorld context summary." in message for message in system_messages)
-    assert any("Resolve the billing discrepancy." in message for message in system_messages)
+    assert any("Task ID:" in message for message in system_messages)
+    # Goal is now in the user prompt, not system context — so it should NOT appear here.
+    assert all("Resolve the billing discrepancy." not in message for message in system_messages)
     assert all("TOP-SECRET" not in message for message in system_messages)
 
 
@@ -244,9 +245,8 @@ def test_appworld_render_prompt_context_is_compact() -> None:
 
     rendered = adapter.render_prompt_context()
 
-    assert "Active AppWorld context summary. Only public task data is available." in rendered
     assert "Task ID: aw-compact-1" in rendered
-    assert "Goal: Resolve the billing discrepancy." in rendered
+    assert "Goal" not in rendered  # Goal is in the user prompt, not runtime context
     assert "Required apps: spotify." in rendered
     assert "Supervisor: email=ava@example.com, phone_number=1234567890." in rendered
     assert "Public signals: metric_adjective=liked, most_least=most." in rendered
@@ -629,7 +629,7 @@ def test_execute_appworld_code_returns_plain_result_without_strategy_guidance() 
 
     result = adapter.execute_task_code("'ok'")
 
-    assert result == {"executed_code": "print('ok')"}
+    assert result == {"executed_code": "print('\\x00__RETURN__\\x00')\nprint('ok')"}
 
 
 def test_file_system_task_plan_hint_prioritizes_relevant_mutation_apis() -> None:
@@ -756,7 +756,7 @@ def test_execute_appworld_code_auto_prints_final_expression() -> None:
     result = adapter.execute_task_code("apis.supervisor.show_account_passwords()")
 
     assert result == {
-        "executed_code": "print(apis.supervisor.show_account_passwords())",
+        "executed_code": "print('\\x00__RETURN__\\x00')\nprint(apis.supervisor.show_account_passwords())",
     }
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from leo.agents import ContextConfig, ReActAgent
-from leo.core.logging_utils import CONCISE_LEVEL, ensure_trace_logging
+from leo.core.logging_utils import CONCISE_LEVEL, TRACE_LEVEL, ensure_trace_logging
 from leo.tools.registry import ToolsRegistry
 
 from test.fakes import FakeLLM, FakeToolCall
@@ -297,16 +297,24 @@ def test_react_agent_logs_full_concise_turn_output(caplog: pytest.LogCaptureFixt
     assert result == "done"
     assert called == ["full query text"]
     rendered = "\n".join(record.getMessage() for record in caplog.records)
-    assert "Initial System Prompt:" in rendered
-    assert "Initial Assistant Prompt:\n-" in rendered
-    assert "Initial User Prompt:\nSolve the task completely." in rendered
-    assert "Turn 1" in rendered
-    assert '"thought": "inspect data first."' in rendered
-    assert 'Tool Call:\nlookup' in rendered
+    # Initial prompt banners
+    assert "SYSTEM PROMPT" in rendered
+    assert "INITIAL USER PROMPT" in rendered
+    # No initial assistant banner when there is no assistant seed message
+    assert "INITIAL ASSISTANT" not in rendered
+    # Turn banners
+    assert "TURN 1" in rendered
+    assert "TURN 2" in rendered
+    # LLM structured-response fields
+    assert "[THOUGHT] inspect data first." in rendered
+    assert "[CONTENT] Checking lookup output." in rendered
+    # Tool call and result
+    assert "[CALL] lookup attempt=1" in rendered
+    assert "[ARGS]" in rendered
     assert '"query": "full query text"' in rendered
-    assert "Result:\nline one\nline two" in rendered
-    assert "===============\n\nTurn 2" in rendered
-    assert "Tool Call:\nfinal_answer" in rendered
+    assert "[OUTPUT]\nline one\nline two" in rendered
+    # Final answer
+    assert "[CALL] final_answer attempt=1" in rendered
     assert '"answer": "done"' in rendered
 
 
@@ -352,7 +360,7 @@ def test_react_agent_logs_code_arguments_as_multiline_code(
 
     assert result == "done"
     rendered = "\n".join(record.getMessage() for record in caplog.records)
-    assert "Arguments:\ncode:\n        x = 1\n        print(x)" in rendered
+    assert "[CODE]\n        x = 1\n        print(x)" in rendered
 
 
 def test_react_agent_stops_repeated_same_action() -> None:
@@ -605,7 +613,7 @@ def test_react_agent_can_list_and_run_skill_command() -> None:
     assert result == "command ran"
 
 
-def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFixture) -> None:
+def test_react_agent_logs_turn_details_at_trace_level(caplog: pytest.LogCaptureFixture) -> None:
     def lookup(query: str) -> str:
         return f"obs:{query}"
 
@@ -637,15 +645,17 @@ def test_react_agent_logs_turn_details_at_info_level(caplog: pytest.LogCaptureFi
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
 
-    with caplog.at_level("INFO", logger="leo.agents.react_agent"):
+    with caplog.at_level(TRACE_LEVEL, logger="leo.agents.react_agent"):
         result = agent.run("do thing", max_iterations=4)
 
     assert result == "done"
     messages = [record.getMessage() for record in caplog.records]
+    # "model responded" stays at INFO level
     assert any(
         "Turn 1: model responded" in message and "tool_calls=1" in message
         for message in messages
     )
+    # "executing tool" and "tool completed" are now TRACE level
     assert any(
         "Turn 1: executing tool=lookup" in message
         and '"query": "a"' in message
@@ -946,17 +956,18 @@ def test_react_agent_logs_same_turn_structured_retry_attempts(
     messages = [record.getMessage() for record in caplog.records]
     assert any(
         message
-        == "Turn 1 attempt 2/3: retrying model after invalid structured response."
+        == "Turn 1 attempt 2/5: retrying model after invalid structured response."
         for message in messages
     )
     assert any(
         message
-        == "Turn 1 attempt 3/3: retrying model after invalid structured response."
+        == "Turn 1 attempt 3/5: retrying model after invalid structured response."
         for message in messages
     )
-    assert any(
-        "Turn 1: exhausted 3 structured response attempts; carrying a retry instruction into the next turn."
-        in message
+    # With 5 max attempts and only 3 failing responses the agent recovers within
+    # the same turn rather than exhausting all attempts.
+    assert not any(
+        "exhausted" in message
         for message in messages
     )
 

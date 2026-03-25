@@ -26,26 +26,23 @@ LOGGER = logging.getLogger("leo.appworld.run")
 
 APPWORLD_RUN_PROMPT_SUPPLEMENT = (
     "\nYou are solving an AppWorld task."
-    "\nAppWorld is a closed simulated environment. Do not use real external services, real accounts, or third-party packages unless they are clearly part of the AppWorld runtime."
-    "\nRead the injected task context carefully. Reuse exact supervisor identifiers from the task context, especially email or phone_number, and do not call get_environment_task_context at the start unless you need to re-check one field later."
+    "\nAppWorld is a closed simulated environment. Do not use real external services, real accounts, or third-party packages."
+    "\nReuse exact supervisor identifiers from the task context (especially email or phone_number) for app login. Do not guess alternate usernames."
     "\nDiscover APIs with list_appworld_apis and describe_appworld_api before writing code. Do not guess API names or parameters."
-    "\nKeep discovery tight: after one broad list_appworld_apis call, use only a few targeted describe_appworld_api calls, then write code. If auth_hint or task_plan_hint is present, follow it and move to execute_appworld_code quickly; on straightforward retrieval tasks, the first execute_appworld_code snippet should usually happen by turn 3."
+    "\nKeep discovery tight: one broad list_appworld_apis call, a few targeted describe_appworld_api calls, then write code. On straightforward retrieval tasks, the first execute_appworld_code snippet should happen by turn 3."
     "\nUse execute_appworld_code for AppWorld work; do not use execute_python."
-    "\nInside execute_appworld_code, use AppWorld's preloaded `apis` object and call APIs as `apis.<app_name>.<api_name>(...)`; do not invent `apps`, unbound globals, or external SDK clients."
-    "\nWrite short, linear snippets. Use print(...) when you need values echoed back. Avoid broad exploration like print(dir(...)), avoid full credential dumps, do not retype access tokens from tool output, and do not call `exit()`, `quit()`, or `sys.exit()`."
-    "\nKeep auth and follow-up API calls in one snippet when practical. The common path is supervisor.show_account_passwords -> app login -> reuse access_token."
-    "\nTreat documented parameters as exact: pass required parameters, only the optional parameters you need, and do not carry `access_token` into APIs whose schema does not include it."
-    "\nTreat pagination as a likely failure mode. Fetch all relevant pages before ranking or aggregating, and if docs show a page_limit constraint, respect it exactly; many AppWorld list APIs cap page_limit at 20."
-    "\nInterpret ranking words literally. Use explicit metric fields such as like_count, rating, play_count, or created_at instead of inferring them from frequency or collection membership."
-    "\nFor Spotify playlist tasks, do not assume 'my playlists' means only owned playlists. Check both playlist library and liked playlists when the wording does not restrict ownership."
-    "\nIf list responses already include useful fields such as song_ids, like_count, rating, or created_at, use them directly unless you still need missing entity-level details."
-    "\nAggregate across all relevant records before deciding on the answer. If one code attempt fails because a module or action is not allowed, recover with an AppWorld-native approach."
-    "\nIf a code snippet raises a KeyError or AttributeError on a field you expected in an API response, do not add a silent guard clause that skips the required operation. Instead, print the actual response to inspect its real fields, then fix your code to use the correct field name."
-    "\nWhen searching for a specific API returns no direct match, do NOT keep searching with similar query variations. Instead, immediately call list_appworld_apis(app_name='<app>', max_results=50) with NO query parameter to see ALL available APIs for the app, then scan the full list to identify the correct approach. For example, if searching 'remove_song_from_queue' finds nothing useful, call list_appworld_apis(app_name='spotify') with no query to see all Spotify APIs including queue and music_player APIs."
-    "\nIf no direct removal or deletion API exists for a collection (e.g. no remove_song_from_queue), search for workaround approaches: look for update/replace/clear APIs, or rebuild the collection by adding only the items you want to keep. Always execute your workaround strategy with execute_appworld_code before calling final_answer; never draft code and then skip execution."
-    "\nWhen removing multiple items from a queue or ordered list by position index: first collect ALL positions to remove into a single list, sort that list in DESCENDING order, then remove one at a time from highest to lowest. Never iterate by song and remove each song's positions independently — that breaks position ordering across different songs."
-    "\nReturn only what the task asks for. For question-answer tasks, final_answer.answer should usually be the bare answer value. For state-mutation tasks with no textual answer, call final_answer with answer=null after the state change is complete."
-    "\nBefore finishing, ensure the final answer is saved for evaluation."
+    "\nInside execute_appworld_code, call APIs as `apis.<app_name>.<api_name>(...)`; do not invent `apps`, unbound globals, or external SDK clients."
+    "\nWrite short, linear snippets. Use print(...) when you need values echoed back. Do not call `exit()`, `quit()`, or `sys.exit()`."
+    "\nKeep auth and follow-up API calls in one snippet. Common path: supervisor.show_account_passwords -> app login -> reuse access_token."
+    "\nPass only documented parameters. Do not carry `access_token` into APIs whose schema does not include it."
+    "\nFetch all relevant pages before ranking or aggregating; many AppWorld list APIs cap page_limit at 20."
+    "\nInterpret ranking words literally. Use explicit metric fields (like_count, rating, play_count, created_at) instead of inferring from frequency or collection membership."
+    "\nAggregate across all relevant records before deciding on the answer."
+    "\nIf a code snippet raises a KeyError or AttributeError, print the actual response to inspect its real fields, then fix the code."
+    "\nWhen API search returns no match, call list_appworld_apis(app_name='<app>', max_results=50) with no query to see all available APIs."
+    "\nIf no direct removal API exists, look for update/replace/clear APIs or rebuild the collection. Always execute the workaround before calling final_answer."
+    "\nWhen removing by position index: collect ALL positions, sort DESCENDING, remove one at a time from highest to lowest."
+    "\nReturn only what the task asks for. For question-answer tasks, final_answer.answer is the bare answer value. For state-mutation tasks, call final_answer with answer=null after the state change."
 )
 
 
@@ -54,50 +51,22 @@ def _build_appworld_user_prompt(
     *,
     initial_app_hint: dict[str, Any] | None = None,
 ) -> str:
+    """Build the first user message for an AppWorld task.
+
+    Supervisor identity and Public signals are in the runtime context system
+    message (render_prompt_context).  The Goal is repeated here so the model
+    sees the concrete instruction in the user turn it is responding to — small
+    models may not act on system-only context.
+    """
     instruction = str(task_context.get("instruction") or "").strip()
-    task_id = str(task_context.get("task_id") or "").strip()
     public_data = task_context.get("public_data")
     public_data = public_data if isinstance(public_data, dict) else {}
-    supervisor = task_context.get("supervisor")
-    supervisor = supervisor if isinstance(supervisor, dict) else {}
-    library_name = str(public_data.get("library_name") or "").strip()
     metric_adjective = str(public_data.get("metric_adjective") or "").strip().lower()
-    most_least = str(public_data.get("most_least") or "").strip().lower()
-    lines = [
-        "Solve the active AppWorld task using the provided environment context and tools.",
-    ]
-    lines.append(
-        "The public task context is already included above; do not call get_environment_task_context unless you need to verify a later change or re-check one specific field."
-    )
-    if task_id:
-        lines.append(f"Task ID: {task_id}")
+    lines: list[str] = []
     if instruction:
         lines.append(f"Goal: {instruction}")
-    supervisor_parts = [
-        f"email={supervisor['email']}" if supervisor.get("email") else "",
-        f"phone_number={supervisor['phone_number']}" if supervisor.get("phone_number") else "",
-        f"first_name={supervisor['first_name']}" if supervisor.get("first_name") else "",
-        f"last_name={supervisor['last_name']}" if supervisor.get("last_name") else "",
-    ]
-    supervisor_parts = [part for part in supervisor_parts if part]
-    if supervisor_parts:
-        lines.append("Supervisor identity: " + ", ".join(supervisor_parts) + ".")
-        if supervisor.get("email") or supervisor.get("phone_number"):
-            lines.append(
-                "Use these exact supervisor identifiers for app login when relevant; do not guess alternate usernames."
-            )
-    public_signal_parts: list[str] = []
-    for key, raw_value in public_data.items():
-        if raw_value is None or isinstance(raw_value, (dict, list, tuple, set)):
-            continue
-        value = str(raw_value).strip()
-        if not value:
-            continue
-        public_signal_parts.append(f"{key}={value}")
-    if public_signal_parts:
-        lines.append(
-            "Public task signals: " + ", ".join(public_signal_parts) + "."
-        )
+    else:
+        lines.append("Solve the active AppWorld task.")
     if initial_app_hint:
         primary_app = str(initial_app_hint.get("app_name") or "").strip()
         task_plan_hint = initial_app_hint.get("task_plan_hint")
@@ -114,13 +83,13 @@ def _build_appworld_user_prompt(
                 ]
                 if api_names:
                     lines.append(
-                        "Initial AppWorld hint for your next execute_appworld_code snippet: plan to call "
+                        "Initial hint: plan to call "
                         + ", ".join(f"`apis.{name}(...)`" for name in api_names[:6])
-                        + ". These are AppWorld APIs to use inside code, not Leo tool names."
+                        + " inside execute_appworld_code."
                     )
             answer_format_hint = str(task_plan_hint.get("answer_format_hint") or "").strip()
             if answer_format_hint:
-                lines.append(f"Initial answer-format hint: {answer_format_hint}")
+                lines.append(f"Answer format: {answer_format_hint}")
         if isinstance(auth_hint, dict):
             credential_source = auth_hint.get("credential_source")
             login_api = str(auth_hint.get("login_api") or "").strip()
@@ -129,25 +98,20 @@ def _build_appworld_user_prompt(
                 credential_api = str(credential_source.get("api_name") or "").strip()
                 if credential_app and credential_api and primary_app and login_api:
                     lines.append(
-                        "Initial auth hint inside code: use "
-                        f"`apis.{credential_app}.{credential_api}(...)` -> `apis.{primary_app}.{login_api}(...)`."
+                        f"Auth path: `apis.{credential_app}.{credential_api}(...)` -> `apis.{primary_app}.{login_api}(...)`."
                     )
-        lines.append(
-            "Use these initial AppWorld hints as the default path. Do not call list_appworld_apis unless a later tool result shows the hint is missing something important."
-        )
     if metric_adjective:
         lines.append(
             f"Ranking rule: use the `{metric_adjective}` metric literally. Do not substitute a different metric."
         )
-    if metric_adjective == "liked":
-        lines.append(
-            "For this task, prefer explicit like metrics such as `like_count`; do not rank by `play_count`, frequency, or occurrences in playlists."
-        )
-    if metric_adjective == "played":
-        lines.append(
-            "For this task, prefer explicit play metrics such as `play_count`; do not substitute `like_count` or rating."
-        )
-    lines.append("Return the full final answer via final_answer.")
+        if metric_adjective == "liked":
+            lines.append(
+                "Prefer `like_count`; do not rank by `play_count`, frequency, or playlist membership."
+            )
+        elif metric_adjective == "played":
+            lines.append(
+                "Prefer `play_count`; do not substitute `like_count` or rating."
+            )
     return "\n".join(lines)
 
 
