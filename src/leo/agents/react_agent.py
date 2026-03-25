@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..core.logging_utils import CONCISE_LEVEL, TRACE_LEVEL
 from ..core.llm import LeoLLMClient, LeoLLMException
+from ..knowledge import KnowledgeBase
 from ..tools.registry import ToolsRegistry
 from .agent import Agent
 from .session import AgentSession
@@ -139,9 +140,13 @@ class ReActAgent(Agent):
         tools_registry: ToolsRegistry | None = None,
         extra_system_prompt: str | None = None,
         context_config: ContextConfig | None = None,
+        knowledge: KnowledgeBase | None = None,
+        knowledge_top_k: int = 15,
     ):
         self.tools_registry = tools_registry or ToolsRegistry()
         self._context_config = context_config or ContextConfig()
+        self._knowledge = knowledge
+        self._knowledge_top_k = knowledge_top_k
 
         system_prompt = REACT_AGENT_SYSTEM_PROMPT_BASE
         system_prompt += "The following tools are available to you:"
@@ -274,6 +279,47 @@ class ReActAgent(Agent):
         text = answer.strip()
         return True, (text or None)
 
+    def _build_knowledge_query(self, conversation: list[dict[str, Any]]) -> str:
+        """Build a retrieval query from the task description and last turn context."""
+        parts: list[str] = []
+        # First user message — the task description.
+        for msg in conversation:
+            if msg.get("role") == "user":
+                parts.append(msg.get("content") or "")
+                break
+        # Last assistant message — thought and tool call names/args as context.
+        for msg in reversed(conversation):
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content") or ""
+            try:
+                parsed = json.loads(content)
+                thought = parsed.get("thought") or ""
+                if thought:
+                    parts.append(thought)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                parts.append(fn.get("name", ""))
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                    parts.extend(str(v) for v in args.values() if isinstance(v, str))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            break
+        return " ".join(parts)
+
+    def _build_knowledge_message(self, conversation: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not self._knowledge:
+            return None
+        query = self._build_knowledge_query(conversation)
+        matches = self._knowledge.retrieve(query, top_k=self._knowledge_top_k)
+        if not matches:
+            return None
+        examples = "\n\n".join(f'"{action}":\n{code}' for action, code in matches)
+        return {"role": "system", "content": f"Relevant code examples:\n\n{examples}"}
+
     def _build_model_messages(
         self,
         conversation: list[dict[str, Any]],
@@ -283,15 +329,15 @@ class ReActAgent(Agent):
             "role": "system",
             "content": self._build_tool_schema_prompt(),
         }
+        knowledge_message = self._build_knowledge_message(conversation)
+        extra = [knowledge_message] if knowledge_message else []
         if not runtime_messages:
             if not conversation:
-                return [
-                    {"role": "system", "content": self.system_prompt},
-                    tool_schema_message,
-                ]
+                return [{"role": "system", "content": self.system_prompt}, tool_schema_message, *extra]
             return [
                 conversation[0],
                 tool_schema_message,
+                *extra,
                 *self._compact_history(conversation[1:]),
             ]
         system_message = (
@@ -304,6 +350,7 @@ class ReActAgent(Agent):
             system_message,
             tool_schema_message,
             *runtime_messages,
+            *extra,
             *self._compact_history(remainder),
         ]
 
@@ -441,10 +488,20 @@ class ReActAgent(Agent):
 
     def _build_tool_schema_prompt(self) -> str:
         tool_schemas = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
+        # Strip the {"type": "function", "function": {...}} wrapper so the model
+        # sees plain tool definitions instead of OpenAI native-function-calling
+        # format, which can cause fine-tuned models to generate native tool_calls
+        # that conflict with our structured JSON response format.
+        simplified = [
+            s["function"] if isinstance(s, dict) and "function" in s else s
+            for s in tool_schemas
+        ]
         return (
-            "Tool schemas are provided below. Use them to populate `tool_calls` exactly. "
+            "Tool schemas are provided below. Embed tool invocations ONLY inside "
+            "the `tool_calls` field of your JSON response. "
+            "Do NOT use native function/tool calling.\n"
             "Each `tool_calls` item must contain `name` and an object `arguments`.\n"
-            f"{json.dumps(tool_schemas, indent=2, sort_keys=True)}"
+            f"{json.dumps(simplified, indent=2, sort_keys=True)}"
         )
 
     @staticmethod
@@ -651,12 +708,14 @@ class ReActAgent(Agent):
         self,
         messages: list[dict[str, Any]],
     ) -> tuple[Any, str]:
-        tool_schemas = self._build_tool_schemas(self.tools_registry.get_tool_schemas())
+        # Tools are described in the system prompt; do not pass them as native
+        # API tools — that activates provider-side tool-call parsing which
+        # conflicts with our structured JSON output format.
         request_kwargs = {"response_format": self._build_structured_response_format()}
         try:
             assistant_message = self.llm.complete(
                 messages=messages,
-                tools=tool_schemas,
+                tools=None,
                 **request_kwargs,
             )
             return assistant_message, assistant_message.content or ""
@@ -665,7 +724,7 @@ class ReActAgent(Agent):
                 "Structured response_format request failed; retrying without response_format. error=%s",
                 exc,
             )
-        assistant_message = self.llm.complete(messages=messages, tools=tool_schemas)
+        assistant_message = self.llm.complete(messages=messages, tools=None)
         return assistant_message, assistant_message.content or ""
 
     @staticmethod

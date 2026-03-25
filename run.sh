@@ -8,7 +8,7 @@
 #--max-iterations 20
 
 unset OPENROUTER_API_KEY  # let .env take precedence over any stale shell var
-NAME=ollama-oss-20b-c1
+NAME=ollama-oss-20b-k1
 rm -rf /tmp/leo-appworld-runs/appworld-test-normal-base-${NAME}
 #PYTHONPATH=src python -m leo.cli.main evaluate \
 leo evaluate \
@@ -18,14 +18,15 @@ leo evaluate \
   --output-root /tmp/leo-appworld-runs \
   --max-iterations 30 \
   --dataset test_normal \
-  --task-limit 16\
+  --task-limit 16 \
   --agent react \
   --provider ollama \
   --model 'gpt-oss:20b' \
-  --extra-sys-prompt artifacts/code-dict-man.txt \
+  --knowledge artifacts/code-dict-man.txt \
   --log-level concise 2>&1 | tee artifacts/log
 
 
+#  --task-id 3d9a636_2\
 #  --extra-sys-prompt artifacts/code-dict-man.txt \
 #  --task-id 29a7b7e_2\
 #  --provider openrouter \

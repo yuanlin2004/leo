@@ -13,6 +13,7 @@ import inspect
 from leo import LeoLLMClient
 from leo.agent_spec import AgentSpec, AgentSpecError, load_agent_spec
 from leo.agents import ContextConfig, PlanExecuteAgent, ReActAgent, SimpleAgent
+from leo.knowledge import KnowledgeBase
 from leo.cli.banner import render_leo_banner
 from leo.core import configure_leo_logging
 from leo.core.logging_utils import resolve_log_level
@@ -142,6 +143,19 @@ def _add_shared_options(parser: argparse.ArgumentParser) -> None:
         default=0,
         metavar="N",
         help="Truncate old tool results to N chars. 0 = disabled (default).",
+    )
+    parser.add_argument(
+        "--knowledge",
+        default=None,
+        metavar="PATH",
+        help="Path to a knowledge file (action/code dict) for per-turn context injection.",
+    )
+    parser.add_argument(
+        "--knowledge-top-k",
+        type=int,
+        default=15,
+        metavar="N",
+        help="Number of knowledge entries to inject per turn (default: 15).",
     )
 
 
@@ -309,12 +323,18 @@ class AgentRuntimeBuilder:
             drop_errors=getattr(self.args, "context_drop_errors", True),
             truncate_chars=getattr(self.args, "context_truncate_chars", 0),
         )
+        knowledge: KnowledgeBase | None = None
+        knowledge_path = getattr(self.args, "knowledge", None)
+        if knowledge_path:
+            knowledge = KnowledgeBase.from_file(knowledge_path)
         return ReActAgent(
             name="leo-react",
             llm=llm_client,
             tools_registry=registry,
             extra_system_prompt=combined_extra_prompt,
             context_config=context_config,
+            knowledge=knowledge,
+            knowledge_top_k=getattr(self.args, "knowledge_top_k", 15),
         )
 
     def create_for_environment(
