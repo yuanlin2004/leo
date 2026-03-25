@@ -1,7 +1,8 @@
 import json
 import logging
 import time
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -13,6 +14,22 @@ from .agent import Agent
 from .session import AgentSession
 
 LOGGER = logging.getLogger("leo.agents.react_agent")
+
+
+@dataclass(frozen=True)
+class ContextConfig:
+    """Controls how message history is compacted before each LLM call."""
+
+    dedup: bool = True
+    """Drop older (assistant tool_call + tool result) pairs when a later identical
+    call (same tool name and arguments) returned the same content."""
+
+    drop_errors: bool = True
+    """Drop older (assistant tool_call + tool result) pairs whose result looks like
+    an error, when a later identical call succeeded."""
+
+    truncate_chars: int = 0
+    """Truncate old tool results to this many characters. 0 = disabled."""
 
 REACT_AGENT_SYSTEM_PROMPT_BASE = """
 You are a ReAct-style assistant.
@@ -90,7 +107,6 @@ class ReActAgent(Agent):
     _MAX_REPEAT_ACTIONS = 3
     _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 3
     _MAX_LOG_PREVIEW_CHARS = 200
-    _MAX_TOOL_RESULT_HISTORY_CHARS = 2000
     _FINAL_ANSWER_TOOL_NAME = "final_answer"
     _STRUCTURED_RESPONSE_FORMAT_NAME = "react_agent_turn"
     _STRUCTURED_RESPONSE_FALLBACK_THOUGHT = "Continuing with the task."
@@ -122,8 +138,10 @@ class ReActAgent(Agent):
         llm: LeoLLMClient,
         tools_registry: ToolsRegistry | None = None,
         extra_system_prompt: str | None = None,
+        context_config: ContextConfig | None = None,
     ):
         self.tools_registry = tools_registry or ToolsRegistry()
+        self._context_config = context_config or ContextConfig()
 
         system_prompt = REACT_AGENT_SYSTEM_PROMPT_BASE
         system_prompt += "The following tools are available to you:"
@@ -274,7 +292,7 @@ class ReActAgent(Agent):
             return [
                 conversation[0],
                 tool_schema_message,
-                *self._trim_tool_results(conversation[1:]),
+                *self._compact_history(conversation[1:]),
             ]
         system_message = (
             conversation[0]
@@ -286,37 +304,125 @@ class ReActAgent(Agent):
             system_message,
             tool_schema_message,
             *runtime_messages,
-            *self._trim_tool_results(remainder),
+            *self._compact_history(remainder),
         ]
 
-    def _trim_tool_results(
+    @staticmethod
+    def _is_error_result(content: str) -> bool:
+        s = content.strip()
+        if s.startswith(("[Loop detected]", "[Error", "Error:")):
+            return True
+        if s.startswith("{"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, dict) and "error" in parsed:
+                    return True
+            except json.JSONDecodeError:
+                pass
+        return False
+
+    def _compact_history(
         self,
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Truncate tool message content in history to avoid context bloat.
+        """Compact message history before each LLM call.
 
-        The most recent tool message is kept in full so the model always
-        sees the latest result without truncation. Older tool messages are
-        capped at _MAX_TOOL_RESULT_HISTORY_CHARS.
+        Depending on ContextConfig:
+        - dedup: drop older (assistant tool_call + tool result) pairs when a
+          later identical call returned the same content.
+        - drop_errors: drop older error results superseded by a later successful
+          call with the same tool and arguments.
+        - truncate_chars > 0: truncate remaining old tool results to that limit.
         """
-        max_chars = self._MAX_TOOL_RESULT_HISTORY_CHARS
-        # Find index of the last tool message so we can leave it intact.
-        last_tool_idx = -1
-        for i, msg in enumerate(messages):
+        cfg = self._context_config
+        if not cfg.dedup and not cfg.drop_errors and cfg.truncate_chars <= 0:
+            return messages
+
+        # Build call_id → (tool_name, args_json) from assistant messages.
+        call_info: dict[str, tuple[str, str]] = {}
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    cid = tc.get("id")
+                    if cid:
+                        fn = tc.get("function") or {}
+                        call_info[cid] = (fn.get("name", ""), fn.get("arguments", ""))
+
+        # Build call_id → result content from tool messages.
+        call_results: dict[str, str] = {}
+        for msg in messages:
             if msg.get("role") == "tool":
-                last_tool_idx = i
+                cid = msg.get("tool_call_id")
+                if cid:
+                    call_results[cid] = msg.get("content") or ""
+
+        # Group call_ids by (tool_name, args_json), preserving order of appearance.
+        groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for msg in messages:
+            if msg.get("role") == "tool":
+                cid = msg.get("tool_call_id")
+                if cid and cid in call_info:
+                    groups[call_info[cid]].append(cid)
+
+        # Determine which call_ids to drop entirely.
+        drop_ids: set[str] = set()
+
+        if cfg.dedup:
+            for cids in groups.values():
+                for i, cid in enumerate(cids[:-1]):
+                    later_contents = [call_results.get(c, "") for c in cids[i + 1 :]]
+                    if call_results.get(cid, "") in later_contents:
+                        drop_ids.add(cid)
+
+        if cfg.drop_errors:
+            for cids in groups.values():
+                for i, cid in enumerate(cids[:-1]):
+                    if cid in drop_ids:
+                        continue
+                    if self._is_error_result(call_results.get(cid, "")):
+                        later_succeeded = any(
+                            not self._is_error_result(call_results.get(c, ""))
+                            for c in cids[i + 1 :]
+                        )
+                        if later_succeeded:
+                            drop_ids.add(cid)
+
+        # Find the index of the last surviving tool message for truncation exemption.
+        last_tool_idx = -1
+        if cfg.truncate_chars > 0:
+            for i, msg in enumerate(messages):
+                if msg.get("role") == "tool" and msg.get("tool_call_id") not in drop_ids:
+                    last_tool_idx = i
+
+        # Rebuild message list.
         result: list[dict[str, Any]] = []
         for i, msg in enumerate(messages):
-            if msg.get("role") == "tool" and i != last_tool_idx:
-                content = msg.get("content") or ""
-                if isinstance(content, str) and len(content) > max_chars:
-                    half = max_chars // 2
-                    content = (
-                        content[:half]
-                        + f"\n...[{len(content) - max_chars} chars truncated from history]...\n"
-                        + content[-half:]
-                    )
-                    msg = {**msg, "content": content}
+            role = msg.get("role")
+            if role == "tool":
+                cid = msg.get("tool_call_id")
+                if cid in drop_ids:
+                    continue
+                if cfg.truncate_chars > 0 and i != last_tool_idx:
+                    content = msg.get("content") or ""
+                    max_chars = cfg.truncate_chars
+                    if isinstance(content, str) and len(content) > max_chars:
+                        half = max_chars // 2
+                        content = (
+                            content[:half]
+                            + f"\n...[{len(content) - max_chars} chars truncated from history]...\n"
+                            + content[-half:]
+                        )
+                        msg = {**msg, "content": content}
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls") or []
+                if tool_calls:
+                    kept = [tc for tc in tool_calls if tc.get("id") not in drop_ids]
+                    if len(kept) < len(tool_calls):
+                        if not kept and not (msg.get("content") or "").strip():
+                            continue
+                        msg = {**msg, "tool_calls": kept if kept else None}
+                        if not kept:
+                            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
             result.append(msg)
         return result
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from leo.agents import ReActAgent
+from leo.agents import ContextConfig, ReActAgent
 from leo.core.logging_utils import CONCISE_LEVEL, ensure_trace_logging
 from leo.tools.registry import ToolsRegistry
 
@@ -959,3 +959,168 @@ def test_react_agent_logs_same_turn_structured_retry_attempts(
         in message
         for message in messages
     )
+
+
+# ---------------------------------------------------------------------------
+# _compact_history tests
+# ---------------------------------------------------------------------------
+
+
+def _make_agent(context_config: ContextConfig) -> ReActAgent:
+    return ReActAgent(
+        name="test",
+        llm=FakeLLM([]),
+        tools_registry=ToolsRegistry(),
+        context_config=context_config,
+    )
+
+
+def _assistant_msg(tool_calls: list[tuple[str, str, str]]) -> dict:
+    """Build an assistant message with tool_calls.
+    Each tuple is (call_id, tool_name, args_json).
+    """
+    return {
+        "role": "assistant",
+        "content": "{}",
+        "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": name, "arguments": args}}
+            for cid, name, args in tool_calls
+        ],
+    }
+
+
+def _tool_msg(call_id: str, content: str) -> dict:
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+def test_compact_history_dedup_drops_older_identical_call() -> None:
+    """Same tool+args+result at turn 1 and turn 3 — turn 1 pair is dropped."""
+    agent = _make_agent(ContextConfig(dedup=True, drop_errors=False, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "list_apis", '{"app": "spotify"}')]),
+        _tool_msg("c1", "big api list"),
+        _assistant_msg([("c2", "describe_api", '{"name": "foo"}')]),
+        _tool_msg("c2", "foo description"),
+        _assistant_msg([("c3", "list_apis", '{"app": "spotify"}')]),
+        _tool_msg("c3", "big api list"),
+    ]
+    result = agent._compact_history(messages)
+    ids = [m.get("tool_call_id") or (m.get("tool_calls") or [{}])[0].get("id") for m in result if m.get("role") in ("tool", "assistant")]
+    # c1 and its assistant entry should be gone; c2 and c3 remain
+    assert all(m.get("tool_call_id") != "c1" for m in result if m.get("role") == "tool")
+    assert not any(
+        tc.get("id") == "c1"
+        for m in result
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    )
+    assert any(m.get("tool_call_id") == "c2" for m in result if m.get("role") == "tool")
+    assert any(m.get("tool_call_id") == "c3" for m in result if m.get("role") == "tool")
+
+
+def test_compact_history_dedup_keeps_different_results() -> None:
+    """Same tool+args but different results (stateful) — both pairs kept."""
+    agent = _make_agent(ContextConfig(dedup=True, drop_errors=False, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "get_balance", '{}')]),
+        _tool_msg("c1", "100"),
+        _assistant_msg([("c2", "transfer", '{"amount": 50}')]),
+        _tool_msg("c2", "ok"),
+        _assistant_msg([("c3", "get_balance", '{}')]),
+        _tool_msg("c3", "50"),
+    ]
+    result = agent._compact_history(messages)
+    tool_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+    assert tool_ids == ["c1", "c2", "c3"]
+
+
+def test_compact_history_drop_errors_removes_superseded_error() -> None:
+    """Error result at turn 1 followed by successful result at turn 3 — turn 1 dropped."""
+    agent = _make_agent(ContextConfig(dedup=False, drop_errors=True, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "call_api", '{"x": 1}')]),
+        _tool_msg("c1", "[Error] bad request"),
+        _assistant_msg([("c2", "call_api", '{"x": 1}')]),
+        _tool_msg("c2", '{"status": "ok"}'),
+    ]
+    result = agent._compact_history(messages)
+    tool_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+    assert tool_ids == ["c2"]
+
+
+def test_compact_history_drop_errors_keeps_error_with_no_subsequent_success() -> None:
+    """Error result with no later successful call — kept."""
+    agent = _make_agent(ContextConfig(dedup=False, drop_errors=True, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "call_api", '{"x": 1}')]),
+        _tool_msg("c1", "[Error] bad request"),
+    ]
+    result = agent._compact_history(messages)
+    tool_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+    assert tool_ids == ["c1"]
+
+
+def test_compact_history_drop_errors_drops_loop_detection_message() -> None:
+    """[Loop detected] result is treated as an error and dropped when succeeded."""
+    agent = _make_agent(ContextConfig(dedup=False, drop_errors=True, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "list_apis", '{"app": "x"}')]),
+        _tool_msg("c1", "[Loop detected] already called 3 times"),
+        _assistant_msg([("c2", "describe_api", '{"name": "foo"}')]),
+        _tool_msg("c2", "api description"),
+    ]
+    # c1 and c2 have different tool names so c1 has no later success for same tool+args.
+    # loop detection on c1 is for list_apis; no later list_apis success → c1 kept.
+    result = agent._compact_history(messages)
+    tool_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+    assert "c1" in tool_ids
+
+
+def test_compact_history_truncate_keeps_last_result_intact() -> None:
+    """Old results are truncated; the last surviving result is kept in full."""
+    agent = _make_agent(ContextConfig(dedup=False, drop_errors=False, truncate_chars=10))
+    messages = [
+        _assistant_msg([("c1", "foo", '{}')]),
+        _tool_msg("c1", "a" * 100),
+        _assistant_msg([("c2", "foo", '{}')]),
+        _tool_msg("c2", "b" * 100),
+    ]
+    result = agent._compact_history(messages)
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2
+    assert "truncated" in tool_msgs[0]["content"]
+    assert tool_msgs[1]["content"] == "b" * 100
+
+
+def test_compact_history_no_ops_when_all_disabled() -> None:
+    """When all options are off, messages are returned unchanged."""
+    agent = _make_agent(ContextConfig(dedup=False, drop_errors=False, truncate_chars=0))
+    messages = [
+        _assistant_msg([("c1", "list_apis", '{}')]),
+        _tool_msg("c1", "big result" * 1000),
+    ]
+    result = agent._compact_history(messages)
+    assert result == messages
+
+
+def test_compact_history_assistant_message_dropped_when_all_calls_removed() -> None:
+    """An assistant message with no content and all tool_calls dropped is removed."""
+    agent = _make_agent(ContextConfig(dedup=True, drop_errors=False, truncate_chars=0))
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",  # truly empty — no thought to preserve
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "list_apis", "arguments": '{"app": "x"}'}}
+            ],
+        },
+        _tool_msg("c1", "same result"),
+        _assistant_msg([("c2", "list_apis", '{"app": "x"}')]),
+        _tool_msg("c2", "same result"),
+    ]
+    result = agent._compact_history(messages)
+    # The first assistant message (c1) should be dropped entirely since it has
+    # no content and its only tool_call was removed.
+    roles = [m["role"] for m in result]
+    assert roles.count("assistant") == 1
+    assert roles.count("tool") == 1
