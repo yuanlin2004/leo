@@ -87,7 +87,7 @@ class ReActAgent(Agent):
     Agent that follows a ReAct loop (reason -> act with tools -> observe -> respond).
     """
 
-    _MAX_REPEAT_ACTIONS = 2
+    _MAX_REPEAT_ACTIONS = 3
     _MAX_STRUCTURED_RESPONSE_ATTEMPTS = 3
     _MAX_LOG_PREVIEW_CHARS = 200
     _MAX_TOOL_RESULT_HISTORY_CHARS = 2000

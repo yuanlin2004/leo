@@ -389,6 +389,10 @@ def test_react_agent_stops_repeated_same_action() -> None:
                 tool_calls=[{"name": "lookup", "arguments": {"query": "same"}}],
             ),
             structured_turn(
+                thought="fourth lookup",
+                tool_calls=[{"name": "lookup", "arguments": {"query": "same"}}],
+            ),
+            structured_turn(
                 thought="fallback",
                 tool_calls=[{"name": "final_answer", "arguments": {"answer": "fallback"}}],
             ),
@@ -396,11 +400,11 @@ def test_react_agent_stops_repeated_same_action() -> None:
     )
     agent = ReActAgent(name="react", llm=llm, tools_registry=registry)
 
-    result = agent.run("repeat", max_iterations=6)
+    result = agent.run("repeat", max_iterations=8)
 
     assert result == "fallback"
-    # The 3rd identical action is skipped by the loop guard.
-    assert called == ["same", "same"]
+    # The 4th identical action is skipped by the loop guard.
+    assert called == ["same", "same", "same"]
 
 
 def test_react_agent_does_not_treat_different_args_as_repeat() -> None:
