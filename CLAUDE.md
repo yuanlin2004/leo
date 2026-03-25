@@ -72,3 +72,7 @@ Environment variables (shell or `.env`):
 - Test files follow `test_*.py` naming; `tsimple_agent.py` and `treact_agent.py` are also discovered
 - `artifacts/` holds run outputs (gitignored)
 - Plugin loading uses `module:class_or_function` string syntax
+
+## Git Commits
+
+- Do not mention Claude or AI assistance in commit messages or co-author lines.
