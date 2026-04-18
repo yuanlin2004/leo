@@ -6,6 +6,7 @@ from pathlib import Path
 
 from leo.cli.banner import render_leo_banner
 from leo.core.llm import LLM
+from leo.core.tools import TOOLS_SCHEMA, dispatch
 
 DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 
@@ -17,6 +18,7 @@ COMMANDS_HELP = (
     "  /think-on     enable model thinking\n"
     "  /think-off    disable model thinking\n"
     "  /status       show model, base_url, thinking state, turn count\n"
+    "  /tools        list installed tools\n"
     "  /save <file>  save current session to file\n"
     "  /load <file>  load session from file"
 )
@@ -37,7 +39,7 @@ def main() -> None:
         system_prompt = DEFAULT_SYSTEM_PROMPT
 
     print(render_leo_banner())
-    print(COMMANDS_HELP)
+    print("type /help to list commands")
 
     llm = LLM()
     think_on = True
@@ -68,6 +70,11 @@ def main() -> None:
         if user_input == "/think-off":
             think_on = False
             print("(thinking: off)")
+            continue
+        if user_input == "/tools":
+            for t in TOOLS_SCHEMA:
+                fn = t["function"]
+                print(f"  {fn['name']}: {fn['description']}")
             continue
         if user_input == "/status":
             print(f"model:    {llm.model}")
@@ -106,9 +113,36 @@ def main() -> None:
             continue
 
         messages.append({"role": "user", "content": user_input})
-        reply = llm.chat(messages, enable_thinking=think_on)
-        messages.append({"role": "assistant", "content": reply})
-        print(f"leo> {reply}")
+        while True:
+            msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
+            entry: dict = {"role": "assistant", "content": msg.content}
+            if msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            messages.append(entry)
+            if not msg.tool_calls:
+                print(f"leo> {msg.content}")
+                break
+            for tc in msg.tool_calls:
+                result = dispatch(tc.function.name, tc.function.arguments)
+                preview = result if len(result) <= 200 else result[:200] + "..."
+                print(f"(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    }
+                )
 
 
 if __name__ == "__main__":

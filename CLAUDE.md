@@ -89,8 +89,12 @@ docker run -d --name vllm --privileged --gpus all --network host --ipc=host \
     --gpu-memory-utilization 0.4 \
     --kv-cache-dtype fp8 \
     --attention-backend flashinfer \
-    --enable-prefix-caching"
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder"
 ```
+
+The `--enable-auto-tool-choice` and `--tool-call-parser qwen3_coder` flags are required for native tool calling (OpenAI-style `tool_calls`) with Qwen3. The `qwen3_coder` parser matches Qwen3's XML-tagged `<tool_call><function=NAME>…</function></tool_call>` format (despite the "coder" name, it handles the whole Qwen3 family, not just coder variants). Using `hermes` here leaves tool-call text unparsed in the assistant content.
 
 ### Long-running batches: use tmux
 

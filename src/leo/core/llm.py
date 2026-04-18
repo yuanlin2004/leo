@@ -21,10 +21,18 @@ class LLM:
         self.api_key = api_key or os.environ.get("LEO_LLM_API_KEY", DEFAULT_API_KEY)
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
-    def chat(self, messages: list[dict], enable_thinking: bool = True) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
-        )
-        return response.choices[0].message.content
+    def chat(
+        self,
+        messages: list[dict],
+        enable_thinking: bool = True,
+        tools: list[dict] | None = None,
+    ):
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message
