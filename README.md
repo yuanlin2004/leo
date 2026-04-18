@@ -37,3 +37,14 @@ leo -sysprompt my.txt     # use a custom system prompt
 ```
 
 Type `/help` inside the REPL for commands.
+
+### Environment variables
+
+Leo loads a `.env` file from the current working directory on startup (via `python-dotenv`). Values already set in the shell environment take precedence over the file. Recognized keys:
+
+- `TAVILY_API_KEY` — required for the `web_search` tool.
+- `LEO_LLM_BASE_URL` — defaults to `http://localhost:8000/v1`.
+- `LEO_LLM_MODEL` — defaults to `Qwen/Qwen3.5-35B-A3B-FP8`.
+- `LEO_LLM_API_KEY` — defaults to `EMPTY` (vLLM ignores it but the SDK requires something).
+
+`.env` is gitignored.

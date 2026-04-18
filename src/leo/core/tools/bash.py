@@ -1,19 +1,10 @@
 from __future__ import annotations
 
-import json
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 OUTPUT_CAP = 8 * 1024
 DEFAULT_TIMEOUT = 30
-
-
-@dataclass
-class ToolContext:
-    workspace: Path
-    net_on: bool = True
 
 
 def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
@@ -57,7 +48,7 @@ def _format_result(exit_code: int, stdout: str, stderr: str) -> str:
     return "\n".join(parts)
 
 
-def bash(ctx: ToolContext, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
+def bash(ctx, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
     argv = _bwrap_argv(ctx.workspace, ctx.net_on, command)
     try:
         proc = subprocess.run(
@@ -71,11 +62,7 @@ def bash(ctx: ToolContext, command: str, timeout_seconds: int = DEFAULT_TIMEOUT)
     return _format_result(proc.returncode, proc.stdout, proc.stderr)
 
 
-TOOL_FUNCTIONS: dict[str, Callable[..., str]] = {
-    "bash": bash,
-}
-
-TOOLS_SCHEMA = [
+SCHEMA = [
     {
         "type": "function",
         "function": {
@@ -104,16 +91,4 @@ TOOLS_SCHEMA = [
     },
 ]
 
-
-def dispatch(name: str, arguments_json: str, ctx: ToolContext) -> str:
-    fn = TOOL_FUNCTIONS.get(name)
-    if fn is None:
-        return f"error: unknown tool {name!r}"
-    try:
-        kwargs = json.loads(arguments_json) if arguments_json else {}
-    except json.JSONDecodeError as e:
-        return f"error: invalid arguments JSON: {e}"
-    try:
-        return fn(ctx, **kwargs)
-    except Exception as e:
-        return f"error: {type(e).__name__}: {e}"
+FUNCTIONS = {"bash": bash}

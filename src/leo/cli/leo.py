@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from leo.cli.banner import render_leo_banner
 from leo.core.llm import LLM
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
@@ -12,21 +14,25 @@ DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 
 COMMANDS_HELP = (
     "commands:\n"
-    "  /help         show this help\n"
-    "  /exit, /quit  exit the chatbot\n"
-    "  /reset        clear conversation history\n"
-    "  /think-on     enable model thinking\n"
-    "  /think-off    disable model thinking\n"
-    "  /net-on       allow network inside bash sandbox\n"
-    "  /net-off      block network inside bash sandbox\n"
-    "  /status       show model, base_url, thinking/net state, turn count\n"
-    "  /tools        list installed tools\n"
-    "  /save <file>  save current session to file\n"
-    "  /load <file>  load session from file"
+    "  /help               show this help\n"
+    "  /exit, /quit        exit the chatbot\n"
+    "  /reset              clear conversation history\n"
+    "  /think-on           enable model thinking\n"
+    "  /think-off          disable model thinking\n"
+    "  /net-on             allow network inside bash sandbox\n"
+    "  /net-off            block network inside bash sandbox\n"
+    "  /show-toolcall-on   print tool calls and results as they happen\n"
+    "  /show-toolcall-off  hide tool-call output (default)\n"
+    "  /status             show current settings and turn count\n"
+    "  /tools              list installed tools\n"
+    "  /save <file>        save current session to file\n"
+    "  /load <file>        load session from file"
 )
 
 
 def main() -> None:
+    load_dotenv()
+
     parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
     parser.add_argument(
         "-sysprompt",
@@ -43,16 +49,18 @@ def main() -> None:
     llm = LLM()
     think_on = False
     net_on = True
+    show_tool_call = False
     workspace = Path.cwd().resolve()
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     def print_status() -> None:
-        print(f"model:     {llm.model}")
-        print(f"base_url:  {llm.base_url}")
-        print(f"thinking:  {'on' if think_on else 'off'}")
-        print(f"network:   {'on' if net_on else 'off'}")
-        print(f"workspace: {workspace}")
-        print(f"turns:     {sum(1 for m in messages if m['role'] == 'user')}")
+        print(f"model:         {llm.model}")
+        print(f"base_url:      {llm.base_url}")
+        print(f"thinking:      {'on' if think_on else 'off'}")
+        print(f"network:       {'on' if net_on else 'off'}")
+        print(f"show-toolcall: {'on' if show_tool_call else 'off'}")
+        print(f"workspace:     {workspace}")
+        print(f"turns:         {sum(1 for m in messages if m['role'] == 'user')}")
 
     print(render_leo_banner())
     print_status()
@@ -91,6 +99,14 @@ def main() -> None:
         if user_input == "/net-off":
             net_on = False
             print("(network: off)")
+            continue
+        if user_input == "/show-toolcall-on":
+            show_tool_call = True
+            print("(show-toolcall: on)")
+            continue
+        if user_input == "/show-toolcall-off":
+            show_tool_call = False
+            print("(show-toolcall: off)")
             continue
         if user_input == "/tools":
             for t in TOOLS_SCHEMA:
@@ -153,8 +169,9 @@ def main() -> None:
             ctx = ToolContext(workspace=workspace, net_on=net_on)
             for tc in msg.tool_calls:
                 result = dispatch(tc.function.name, tc.function.arguments, ctx)
-                preview = result if len(result) <= 200 else result[:200] + "..."
-                print(f"(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
+                if show_tool_call:
+                    preview = result if len(result) <= 200 else result[:200] + "..."
+                    print(f"(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
                 messages.append(
                     {
                         "role": "tool",
