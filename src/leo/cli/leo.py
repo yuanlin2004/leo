@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from leo.cli.banner import render_leo_banner
@@ -10,12 +11,14 @@ DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 
 COMMANDS_HELP = (
     "commands:\n"
-    "  /help        show this help\n"
-    "  /exit, /quit exit the chatbot\n"
-    "  /reset       clear conversation history\n"
-    "  /think-on    enable model thinking\n"
-    "  /think-off   disable model thinking\n"
-    "  /status      show model, base_url, thinking state, turn count"
+    "  /help         show this help\n"
+    "  /exit, /quit  exit the chatbot\n"
+    "  /reset        clear conversation history\n"
+    "  /think-on     enable model thinking\n"
+    "  /think-off    disable model thinking\n"
+    "  /status       show model, base_url, thinking state, turn count\n"
+    "  /save <file>  save current session to file\n"
+    "  /load <file>  load session from file"
 )
 
 
@@ -71,6 +74,35 @@ def main() -> None:
             print(f"base_url: {llm.base_url}")
             print(f"thinking: {'on' if think_on else 'off'}")
             print(f"turns:    {sum(1 for m in messages if m['role'] == 'user')}")
+            continue
+        if user_input.startswith("/save"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) != 2:
+                print("usage: /save <file>")
+                continue
+            path = Path(parts[1]).expanduser()
+            path.write_text(
+                json.dumps(
+                    {"messages": messages, "think_on": think_on},
+                    indent=2,
+                )
+            )
+            print(f"(saved to {path})")
+            continue
+        if user_input.startswith("/load"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) != 2:
+                print("usage: /load <file>")
+                continue
+            path = Path(parts[1]).expanduser()
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError) as e:
+                print(f"(load failed: {e})")
+                continue
+            messages = data["messages"]
+            think_on = data.get("think_on", think_on)
+            print(f"(loaded from {path})")
             continue
 
         messages.append({"role": "user", "content": user_input})
