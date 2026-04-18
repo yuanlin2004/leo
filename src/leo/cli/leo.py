@@ -6,7 +6,7 @@ from pathlib import Path
 
 from leo.cli.banner import render_leo_banner
 from leo.core.llm import LLM
-from leo.core.tools import TOOLS_SCHEMA, dispatch
+from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
 
 DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 
@@ -17,7 +17,9 @@ COMMANDS_HELP = (
     "  /reset        clear conversation history\n"
     "  /think-on     enable model thinking\n"
     "  /think-off    disable model thinking\n"
-    "  /status       show model, base_url, thinking state, turn count\n"
+    "  /net-on       allow network inside bash sandbox\n"
+    "  /net-off      block network inside bash sandbox\n"
+    "  /status       show model, base_url, thinking/net state, turn count\n"
     "  /tools        list installed tools\n"
     "  /save <file>  save current session to file\n"
     "  /load <file>  load session from file"
@@ -38,12 +40,23 @@ def main() -> None:
     else:
         system_prompt = DEFAULT_SYSTEM_PROMPT
 
-    print(render_leo_banner())
-    print("type /help to list commands")
-
     llm = LLM()
-    think_on = True
+    think_on = False
+    net_on = True
+    workspace = Path.cwd().resolve()
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
+
+    def print_status() -> None:
+        print(f"model:     {llm.model}")
+        print(f"base_url:  {llm.base_url}")
+        print(f"thinking:  {'on' if think_on else 'off'}")
+        print(f"network:   {'on' if net_on else 'off'}")
+        print(f"workspace: {workspace}")
+        print(f"turns:     {sum(1 for m in messages if m['role'] == 'user')}")
+
+    print(render_leo_banner())
+    print_status()
+    print("type /help to list commands")
 
     while True:
         try:
@@ -71,16 +84,21 @@ def main() -> None:
             think_on = False
             print("(thinking: off)")
             continue
+        if user_input == "/net-on":
+            net_on = True
+            print("(network: on)")
+            continue
+        if user_input == "/net-off":
+            net_on = False
+            print("(network: off)")
+            continue
         if user_input == "/tools":
             for t in TOOLS_SCHEMA:
                 fn = t["function"]
                 print(f"  {fn['name']}: {fn['description']}")
             continue
         if user_input == "/status":
-            print(f"model:    {llm.model}")
-            print(f"base_url: {llm.base_url}")
-            print(f"thinking: {'on' if think_on else 'off'}")
-            print(f"turns:    {sum(1 for m in messages if m['role'] == 'user')}")
+            print_status()
             continue
         if user_input.startswith("/save"):
             parts = user_input.split(maxsplit=1)
@@ -132,8 +150,9 @@ def main() -> None:
             if not msg.tool_calls:
                 print(f"leo> {msg.content}")
                 break
+            ctx = ToolContext(workspace=workspace, net_on=net_on)
             for tc in msg.tool_calls:
-                result = dispatch(tc.function.name, tc.function.arguments)
+                result = dispatch(tc.function.name, tc.function.arguments, ctx)
                 preview = result if len(result) <= 200 else result[:200] + "..."
                 print(f"(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
                 messages.append(

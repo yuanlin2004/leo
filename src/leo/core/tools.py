@@ -1,89 +1,111 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-
-def _tool_date() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
-
-
-def _tool_time() -> str:
-    return datetime.now().astimezone().strftime("%H:%M:%S %Z")
+OUTPUT_CAP = 8 * 1024
+DEFAULT_TIMEOUT = 30
 
 
-def _tool_read_file(path: str) -> str:
-    return Path(path).expanduser().read_text()
+@dataclass
+class ToolContext:
+    workspace: Path
+    net_on: bool = True
 
 
-def _tool_write_file(path: str, content: str) -> str:
-    p = Path(path).expanduser()
-    p.write_text(content)
-    return f"wrote {len(content)} chars to {p}"
+def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
+    argv = ["bwrap", "--die-with-parent", "--unshare-all"]
+    if net_on:
+        argv.append("--share-net")
+    argv += [
+        "--ro-bind", "/usr", "/usr",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/sbin", "/sbin",
+        "--ro-bind", "/etc", "/etc",
+        "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+        "--bind", str(workspace), str(workspace),
+        "--chdir", str(workspace),
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--setenv", "HOME", "/tmp",
+        "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "bash", "-c", command,
+    ]
+    return argv
+
+
+def _truncate(text: str) -> str:
+    if len(text) <= OUTPUT_CAP:
+        return text
+    omitted = len(text) - OUTPUT_CAP
+    return text[:OUTPUT_CAP] + f"\n...(truncated, {omitted} bytes omitted)"
+
+
+def _format_result(exit_code: int, stdout: str, stderr: str) -> str:
+    parts = [f"exit: {exit_code}"]
+    if stdout:
+        parts.append("---stdout---")
+        parts.append(_truncate(stdout))
+    if stderr:
+        parts.append("---stderr---")
+        parts.append(_truncate(stderr))
+    return "\n".join(parts)
+
+
+def bash(ctx: ToolContext, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
+    argv = _bwrap_argv(ctx.workspace, ctx.net_on, command)
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return f"error: command timed out after {timeout_seconds}s"
+    return _format_result(proc.returncode, proc.stdout, proc.stderr)
 
 
 TOOL_FUNCTIONS: dict[str, Callable[..., str]] = {
-    "date": _tool_date,
-    "time": _tool_time,
-    "read_file": _tool_read_file,
-    "write_file": _tool_write_file,
+    "bash": bash,
 }
 
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "date",
-            "description": "Return the current local date as YYYY-MM-DD.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "time",
-            "description": "Return the current local time as HH:MM:SS with timezone.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a text file and return its contents.",
+            "name": "bash",
+            "description": (
+                "Execute a bash command inside a bubblewrap sandbox. "
+                "Read-only system dirs; read-write workspace (the current working "
+                "directory). Network availability is controlled by the user. "
+                "Returns exit code, stdout, and stderr (each capped at 8 KB)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path to the file."},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write text content to a file, overwriting if it exists.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the file."},
-                    "content": {
+                    "command": {
                         "type": "string",
-                        "description": "Text content to write.",
+                        "description": "Shell command to run (passed to 'bash -c').",
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": f"Max runtime in seconds (default {DEFAULT_TIMEOUT}).",
                     },
                 },
-                "required": ["path", "content"],
+                "required": ["command"],
             },
         },
     },
 ]
 
 
-def dispatch(name: str, arguments_json: str) -> str:
+def dispatch(name: str, arguments_json: str, ctx: ToolContext) -> str:
     fn = TOOL_FUNCTIONS.get(name)
     if fn is None:
         return f"error: unknown tool {name!r}"
@@ -92,6 +114,6 @@ def dispatch(name: str, arguments_json: str) -> str:
     except json.JSONDecodeError as e:
         return f"error: invalid arguments JSON: {e}"
     try:
-        return fn(**kwargs)
+        return fn(ctx, **kwargs)
     except Exception as e:
         return f"error: {type(e).__name__}: {e}"
