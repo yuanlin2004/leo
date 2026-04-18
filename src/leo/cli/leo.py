@@ -1,20 +1,44 @@
 from __future__ import annotations
 
+import argparse
+from pathlib import Path
+
 from leo.cli.banner import render_leo_banner
 from leo.core.llm import LLM
 
-SYSTEM_PROMPT = "You are Leo, a helpful assistant."
+DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
+
+COMMANDS_HELP = (
+    "commands:\n"
+    "  /help        show this help\n"
+    "  /exit, /quit exit the chatbot\n"
+    "  /reset       clear conversation history\n"
+    "  /think-on    enable model thinking\n"
+    "  /think-off   disable model thinking\n"
+    "  /status      show model, base_url, thinking state, turn count"
+)
 
 
 def main() -> None:
-    print(render_leo_banner())
-    print(
-        "commands: /exit, /reset, /think-on, /think-off, /status"
+    parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
+    parser.add_argument(
+        "-sysprompt",
+        metavar="FILE",
+        help="path to a file whose contents are used as the system prompt",
     )
+    args = parser.parse_args()
+
+    if args.sysprompt:
+        system_prompt = Path(args.sysprompt).read_text()
+    else:
+        system_prompt = DEFAULT_SYSTEM_PROMPT
+
+    print(render_leo_banner())
+    print(COMMANDS_HELP)
 
     llm = LLM()
     think_on = True
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     while True:
         try:
@@ -25,10 +49,13 @@ def main() -> None:
 
         if not user_input:
             continue
-        if user_input == "/exit":
+        if user_input in ("/exit", "/quit"):
             break
+        if user_input == "/help":
+            print(COMMANDS_HELP)
+            continue
         if user_input == "/reset":
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            messages = [{"role": "system", "content": system_prompt}]
             print("(history cleared)")
             continue
         if user_input == "/think-on":
