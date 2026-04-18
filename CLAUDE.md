@@ -69,6 +69,7 @@ LEO is an LLM-based agent framework.
 - artifacts: run outputs and logs (gitignored)
 - tests: unit tests
 - scripts: various scripts
+- prompts: varous prompts for experimental purposes
 
 ## Other Useful Info
 
