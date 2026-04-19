@@ -143,10 +143,15 @@ SCHEMA = [
             "name": "web_fetch",
             "description": (
                 "Fetch a URL and return the main article content extracted as "
-                "markdown, along with the final URL and page title. Only http(s) "
-                "schemes allowed; refuses non-public addresses (localhost, private "
-                "IPs, link-local). HTML/text content-types only. Content truncated "
-                "to 8 KB. Disabled when the network toggle is off."
+                "markdown, along with the final URL and page title. Returns static "
+                "HTML only — JavaScript is not executed, so SPAs and embedded "
+                "viewers (Google Docs, Drive, etc.) yield boilerplate without the "
+                "real content; in that case, look for embedded data URLs, iframe "
+                "src, or download endpoints in the HTML (via the bash tool + curl "
+                "+ grep) instead. Only http(s) schemes allowed; refuses non-public "
+                "addresses (localhost, private IPs, link-local). HTML/text "
+                "content-types only. Content truncated to 8 KB. Disabled when the "
+                "network toggle is off."
             ),
             "parameters": {
                 "type": "object",
