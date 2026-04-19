@@ -2,15 +2,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_think(text: str | None) -> str:
+    if not text:
+        return text or ""
+    return _THINK_RE.sub("", text).strip()
+
+
+def _extract_think(text: str | None) -> str:
+    if not text:
+        return ""
+    return "\n".join(m.group(1).strip() for m in re.finditer(r"<think>(.*?)</think>", text, re.DOTALL))
 
 from dotenv import load_dotenv
 
 from leo.cli.banner import render_leo_banner
 from leo.core.llm import LLM
+from leo.core.skill_core import discover_skills
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
 
 DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
+SKILLS_ROOT = Path.home() / ".leo" / "skills"
 
 COMMANDS_HELP = (
     "commands:\n"
@@ -23,8 +40,11 @@ COMMANDS_HELP = (
     "  /net-off            block network inside bash sandbox\n"
     "  /show-toolcall-on   print tool calls and results as they happen\n"
     "  /show-toolcall-off  hide tool-call output (default)\n"
+    "  /show-think-on      print model thinking content\n"
+    "  /show-think-off     hide model thinking content (default)\n"
     "  /status             show current settings and turn count\n"
     "  /tools              list installed tools\n"
+    "  /skills             list installed skills\n"
     "  /save <file>        save current session to file\n"
     "  /load <file>        load session from file"
 )
@@ -46,10 +66,20 @@ def main() -> None:
     else:
         system_prompt = DEFAULT_SYSTEM_PROMPT
 
+    skills = discover_skills(SKILLS_ROOT)
+    if skills:
+        lines = "\n".join(f"- {s.name}: {s.description}" for s in skills)
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            "Available skills (call load_skill(name) to read full instructions):\n"
+            f"{lines}"
+        )
+
     llm = LLM()
     think_on = False
     net_on = True
     show_tool_call = False
+    show_think = False
     workspace = Path.cwd().resolve()
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
@@ -59,7 +89,9 @@ def main() -> None:
         print(f"thinking:      {'on' if think_on else 'off'}")
         print(f"network:       {'on' if net_on else 'off'}")
         print(f"show-toolcall: {'on' if show_tool_call else 'off'}")
+        print(f"show-think:    {'on' if show_think else 'off'}")
         print(f"workspace:     {workspace}")
+        print(f"skills:        {len(skills)} loaded")
         print(f"turns:         {sum(1 for m in messages if m['role'] == 'user')}")
 
     print(render_leo_banner())
@@ -108,10 +140,25 @@ def main() -> None:
             show_tool_call = False
             print("(show-toolcall: off)")
             continue
+        if user_input == "/show-think-on":
+            show_think = True
+            print("(show-think: on)")
+            continue
+        if user_input == "/show-think-off":
+            show_think = False
+            print("(show-think: off)")
+            continue
         if user_input == "/tools":
             for t in TOOLS_SCHEMA:
                 fn = t["function"]
                 print(f"  {fn['name']}: {fn['description']}")
+            continue
+        if user_input == "/skills":
+            if not skills:
+                print("(no skills installed)")
+            else:
+                for s in skills:
+                    print(f"  {s.name}: {s.description}")
             continue
         if user_input == "/status":
             print_status()
@@ -149,6 +196,10 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
         while True:
             msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
+            if show_think:
+                reasoning = getattr(msg, "reasoning_content", None) or _extract_think(msg.content)
+                if reasoning:
+                    print(f"(think) {reasoning}")
             entry: dict = {"role": "assistant", "content": msg.content}
             if msg.tool_calls:
                 entry["tool_calls"] = [
@@ -164,9 +215,13 @@ def main() -> None:
                 ]
             messages.append(entry)
             if not msg.tool_calls:
-                print(f"leo> {msg.content}")
+                print(f"leo> {_strip_think(msg.content)}")
                 break
-            ctx = ToolContext(workspace=workspace, net_on=net_on)
+            ctx = ToolContext(
+                workspace=workspace,
+                net_on=net_on,
+                skills={s.name: s for s in skills},
+            )
             for tc in msg.tool_calls:
                 result = dispatch(tc.function.name, tc.function.arguments, ctx)
                 if show_tool_call:

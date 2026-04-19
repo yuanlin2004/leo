@@ -1,24 +1,29 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from leo.core.skill_core import Skill
 
 
 @dataclass
 class ToolContext:
     workspace: Path
     net_on: bool = True
+    skills: dict[str, Skill] = field(default_factory=dict)
 
 
 from . import bash as _bash
+from . import skill_tool as _skill_tool
 from . import web as _web
 
-TOOLS_SCHEMA = _bash.SCHEMA + _web.SCHEMA
+TOOLS_SCHEMA = _bash.SCHEMA + _web.SCHEMA + _skill_tool.SCHEMA
 TOOL_FUNCTIONS: dict[str, Callable[..., str]] = {
     **_bash.FUNCTIONS,
     **_web.FUNCTIONS,
+    **_skill_tool.FUNCTIONS,
 }
 
 

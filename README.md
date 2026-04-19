@@ -48,3 +48,21 @@ Leo loads a `.env` file from the current working directory on startup (via `pyth
 - `LEO_LLM_API_KEY` — defaults to `EMPTY` (vLLM ignores it but the SDK requires something).
 
 `.env` is gitignored.
+
+## Skills
+
+Leo discovers skills at startup from `~/.leo/skills/<name>/SKILL.md`. Each SKILL.md starts with a YAML frontmatter block, followed by instructions the model reads after calling `load_skill`:
+
+```markdown
+---
+name: my-skill
+description: One sentence summary the model sees upfront.
+---
+
+# Instructions
+
+Step-by-step guidance here. Reference scripts or assets in the same directory;
+the model invokes them via the `bash` tool.
+```
+
+At startup, Leo injects `name: description` for each skill into the system prompt. When the model decides a skill is relevant, it calls `load_skill(name)` to read the full body. Use `/skills` in the REPL to list what's installed.
