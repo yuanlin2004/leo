@@ -29,7 +29,27 @@ source venv/bin/activate
 pip install -e .
 ```
 
-### 3. Run
+### 3. Start vllm
+
+```bash
+docker run -d --name vllm --privileged --gpus all --network host --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm-node \
+  bash -c "vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
+    --port 8000 --host 0.0.0.0 \
+    --max-model-len 262144 \
+    --max-num-batched-tokens 4096 \
+    --gpu-memory-utilization 0.5 \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder"
+```
+
+The `--enable-auto-tool-choice` and `--tool-call-parser qwen3_coder` flags are required for native tool calling (OpenAI-style `tool_calls`) with Qwen3. The `qwen3_coder` parser matches Qwen3's XML-tagged `<tool_call><function=NAME>…</function></tool_call>` format (despite the "coder" name, it handles the whole Qwen3 family, not just coder variants). Using `hermes` here leaves tool-call text unparsed in the assistant content.
+
+### 4. Run
 
 ```bash
 leo                       # start the chatbot
