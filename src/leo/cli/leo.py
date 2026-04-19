@@ -68,7 +68,10 @@ def main() -> None:
         lines = "\n".join(f"- {s.name}: {s.description}" for s in skills)
         system_prompt = (
             f"{system_prompt}\n\n"
-            "Available skills (call load_skill(name) to read full instructions):\n"
+            "Available skills. Before attempting a task, check this list. "
+            "If a skill's description matches the task, you MUST call "
+            "load_skill(name) FIRST and follow its instructions — do not "
+            "try to solve the task ad-hoc.\n\n"
             f"{lines}"
         )
 
