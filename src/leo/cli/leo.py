@@ -5,19 +5,16 @@ import json
 import re
 from pathlib import Path
 
-_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
-
-
-def _strip_think(text: str | None) -> str:
+def _split_think(text: str | None) -> tuple[str, str]:
+    """Return (think, reply). Handles paired <think>...</think> and orphan </think>."""
     if not text:
-        return text or ""
-    return _THINK_RE.sub("", text).strip()
-
-
-def _extract_think(text: str | None) -> str:
-    if not text:
-        return ""
-    return "\n".join(m.group(1).strip() for m in re.finditer(r"<think>(.*?)</think>", text, re.DOTALL))
+        return "", text or ""
+    idx = text.rfind("</think>")
+    if idx == -1:
+        return "", text.strip()
+    think = re.sub(r"^\s*<think>\s*", "", text[:idx], count=1).strip()
+    reply = text[idx + len("</think>"):].strip()
+    return think, reply
 
 from dotenv import load_dotenv
 
@@ -196,8 +193,9 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
         while True:
             msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
+            think_text, reply_text = _split_think(msg.content)
             if show_think:
-                reasoning = getattr(msg, "reasoning_content", None) or _extract_think(msg.content)
+                reasoning = getattr(msg, "reasoning_content", None) or think_text
                 if reasoning:
                     print(f"(think) {reasoning}")
             entry: dict = {"role": "assistant", "content": msg.content}
@@ -215,7 +213,7 @@ def main() -> None:
                 ]
             messages.append(entry)
             if not msg.tool_calls:
-                print(f"leo> {_strip_think(msg.content)}")
+                print(f"leo> {reply_text}")
                 break
             ctx = ToolContext(
                 workspace=workspace,
