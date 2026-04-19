@@ -70,5 +70,5 @@ LEO is an LLM-based agent framework.
 - tests: unit tests
 - scripts: various scripts
 - prompts: varous prompts for experimental purposes
-- skills: repo of skills
+- skills-repo: repo of skills
 

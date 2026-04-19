@@ -4,7 +4,11 @@ description: >-
   Extract content from a Google Sites page (sites.google.com or a custom
   domain hosted on Google Sites). These pages are JavaScript-rendered so
   web_fetch returns only boilerplate; the real content lives in embedded
-  Google Drive/Docs/Sheets/PDFs whose IDs are in the raw HTML.
+  Google Drive/Docs/Sheets/PDFs whose IDs are in the raw HTML. Trigger on
+  any of: URL on sites.google.com; web_fetch output under ~500 characters
+  or dominated by navigation/"click a link" text; raw HTML containing
+  DOCS_timing, drive.google.com/viewer/main, or script nonce blobs with
+  little visible body text.
 ---
 
 # When to use this

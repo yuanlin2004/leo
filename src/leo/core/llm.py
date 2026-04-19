@@ -4,7 +4,7 @@ import os
 
 from openai import OpenAI
 
-DEFAULT_MODEL = "Qwen/Qwen3.5-35B-A3B-FP8"
+DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_API_KEY = "EMPTY"
 

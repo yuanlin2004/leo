@@ -71,7 +71,11 @@ def main() -> None:
             "Available skills. Before attempting a task, check this list. "
             "If a skill's description matches the task, you MUST call "
             "load_skill(name) FIRST and follow its instructions — do not "
-            "try to solve the task ad-hoc.\n\n"
+            "try to solve the task ad-hoc. After every tool result, "
+            "re-check this list against what you just observed (not just "
+            "the original user query) before choosing the next tool — a "
+            "skill may match a symptom that only becomes visible after a "
+            "fetch or command runs.\n\n"
             f"{lines}"
         )
 
