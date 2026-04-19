@@ -69,6 +69,26 @@ Leo loads a `.env` file from the current working directory on startup (via `pyth
 
 `.env` is gitignored.
 
+## Examples
+
+```
+$ leo
+...
+you> /think-on
+(thinking: on)
+
+you> Find who the webmaster is from [mvmb.org - About Us](https://www.mvmb.org/Booster-Board)or the pages it links to. 
+
+leo> I found the webmaster information for mvmb.org!
+
+Based on the [MVMB Members Contact List](https://docs.google.com/spreadsheets/d/1t4vG4sSDMVNGBixn1XKh40S4BB_4YGiPU_soLpgYqPY) embedded on the Booster Board page, the webmaster is:
+
+**Yuan Lin** - Media Chair and Webmaster
+- **Email:** media_admin@mvmb.org
+
+This information is from the 2025-2026 Booster Board contact list for Monta Vista High School Music Boosters (MVMB).
+```
+
 ## Skills
 
 Leo discovers skills at startup from `~/.leo/skills/<name>/SKILL.md`. Each SKILL.md starts with a YAML frontmatter block, followed by instructions the model reads after calling `load_skill`:
