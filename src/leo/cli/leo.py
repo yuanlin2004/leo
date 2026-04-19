@@ -196,6 +196,10 @@ def main() -> None:
             think_on = data.get("think_on", think_on)
             print(f"(loaded from {path})")
             continue
+        
+        if user_input.startswith("/"):
+            print(COMMANDS_HELP)
+            continue
 
         messages.append({"role": "user", "content": user_input})
         while True:
