@@ -202,6 +202,8 @@ def main() -> None:
             continue
 
         messages.append({"role": "user", "content": user_input})
+        quiet = not show_think and not show_tool_call
+        dot_count = 0
         while True:
             msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
             think_text, reply_text = _split_think(msg.content)
@@ -224,8 +226,13 @@ def main() -> None:
                 ]
             messages.append(entry)
             if not msg.tool_calls:
+                if dot_count > 0:
+                    print("\r" + " " * dot_count + "\r", end="", flush=True)
                 print(f"\nleo> {reply_text}")
                 break
+            if quiet:
+                print(".", end="", flush=True)
+                dot_count += 1
             ctx = ToolContext(
                 workspace=workspace,
                 net_on=net_on,
