@@ -80,7 +80,7 @@ def main() -> None:
         )
 
     llm = LLM()
-    think_on = False
+    think_on = True
     net_on = True
     show_tool_call = False
     show_think = False
