@@ -86,3 +86,8 @@ the model invokes them via the `bash` tool.
 ```
 
 At startup, Leo injects `name: description` for each skill into the system prompt. When the model decides a skill is relevant, it calls `load_skill(name)` to read the full body. Use `/skills` in the REPL to list what's installed.
+
+
+# Acknowledgements
+
+- Part of `CLAUDE.md` is modified from https://github.com/forrestchang/andrej-karpathy-skills
