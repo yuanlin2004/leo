@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 OUTPUT_CAP = 8 * 1024
 DEFAULT_TIMEOUT = 30
+
+_SCRATCH_DIR: Path | None = None
+
+
+def _scratch_dir() -> Path:
+    global _SCRATCH_DIR
+    if _SCRATCH_DIR is None:
+        _SCRATCH_DIR = Path(tempfile.mkdtemp(prefix="leo-bash-"))
+    return _SCRATCH_DIR
 
 
 def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
     argv = ["bwrap", "--die-with-parent", "--unshare-all"]
     if net_on:
         argv.append("--share-net")
+    scratch = _scratch_dir()
     argv += [
         "--ro-bind", "/usr", "/usr",
         "--symlink", "usr/bin", "/bin",
@@ -22,7 +33,7 @@ def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
         "--chdir", str(workspace),
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
+        "--bind", str(scratch), "/tmp",
         "--setenv", "HOME", "/tmp",
         "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "bash", "-c", command,
@@ -70,8 +81,12 @@ SCHEMA = [
             "description": (
                 "Execute a bash command inside a bubblewrap sandbox. "
                 "Read-only system dirs; read-write workspace (the current working "
-                "directory). Network availability is controlled by the user. "
-                "Returns exit code, stdout, and stderr (each capped at 8 KB)."
+                "directory). Files written to the workspace and /tmp persist across "
+                "calls within a session; env vars, cwd changes, and background jobs "
+                "do NOT persist (each call is a fresh shell). Common tools available: "
+                "curl, grep, sed, awk, jq, python3, pdftotext (poppler-utils). "
+                "Network availability is controlled by the user. Returns exit code, "
+                "stdout, and stderr (each capped at 8 KB)."
             ),
             "parameters": {
                 "type": "object",
