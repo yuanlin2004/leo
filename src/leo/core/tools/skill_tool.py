@@ -9,9 +9,16 @@ def load_skill(ctx, name: str) -> str:
         available = ", ".join(sorted(ctx.skills)) or "(none)"
         return f"error: unknown skill {name!r}. Available: {available}"
     try:
-        return read_skill_body(skill.path)
+        body = read_skill_body(skill.path)
     except OSError as e:
         return f"error: failed to read skill {name!r}: {e}"
+    skill_dir = skill.path.parent.resolve()
+    header = (
+        f"Skill directory: {skill_dir}\n"
+        f"Files referenced by this skill live in that directory. "
+        f"Use absolute paths (e.g. {skill_dir}/<file>) when invoking them.\n\n"
+    )
+    return header + body
 
 
 SCHEMA = [

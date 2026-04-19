@@ -17,7 +17,12 @@ def _scratch_dir() -> Path:
     return _SCRATCH_DIR
 
 
-def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
+def _bwrap_argv(
+    workspace: Path,
+    net_on: bool,
+    command: str,
+    skill_dirs: list[Path] | None = None,
+) -> list[str]:
     argv = ["bwrap", "--die-with-parent", "--unshare-all"]
     if net_on:
         argv.append("--share-net")
@@ -36,8 +41,10 @@ def _bwrap_argv(workspace: Path, net_on: bool, command: str) -> list[str]:
         "--bind", str(scratch), "/tmp",
         "--setenv", "HOME", "/tmp",
         "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "bash", "-c", command,
     ]
+    for sdir in skill_dirs or []:
+        argv += ["--ro-bind-try", str(sdir), str(sdir)]
+    argv += ["bash", "-c", command]
     return argv
 
 
@@ -60,7 +67,8 @@ def _format_result(exit_code: int, stdout: str, stderr: str) -> str:
 
 
 def bash(ctx, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
-    argv = _bwrap_argv(ctx.workspace, ctx.net_on, command)
+    skill_dirs = sorted({s.path.parent.resolve() for s in ctx.skills.values()})
+    argv = _bwrap_argv(ctx.workspace, ctx.net_on, command, skill_dirs)
     try:
         proc = subprocess.run(
             argv,
