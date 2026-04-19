@@ -104,7 +104,7 @@ def main() -> None:
 
     while True:
         try:
-            user_input = input("you> ").strip()
+            user_input = input("\nyou> ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             break
@@ -208,7 +208,7 @@ def main() -> None:
             if show_think:
                 reasoning = getattr(msg, "reasoning_content", None) or think_text
                 if reasoning:
-                    print(f"(think) {reasoning}")
+                    print(f"\n(think) {reasoning}")
             entry: dict = {"role": "assistant", "content": msg.content}
             if msg.tool_calls:
                 entry["tool_calls"] = [
@@ -224,7 +224,7 @@ def main() -> None:
                 ]
             messages.append(entry)
             if not msg.tool_calls:
-                print(f"leo> {reply_text}")
+                print(f"\nleo> {reply_text}")
                 break
             ctx = ToolContext(
                 workspace=workspace,
@@ -235,7 +235,7 @@ def main() -> None:
                 result = dispatch(tc.function.name, tc.function.arguments, ctx)
                 if show_tool_call:
                     preview = result if len(result) <= 200 else result[:200] + "..."
-                    print(f"(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
+                    print(f"\n(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
                 messages.append(
                     {
                         "role": "tool",

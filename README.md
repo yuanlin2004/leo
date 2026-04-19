@@ -91,6 +91,8 @@ This information is from the 2025-2026 Booster Board contact list for Monta Vist
 
 ## Skills
 
+Leo can use skills that follow the spec on https://agentskills.io.
+
 Leo discovers skills at startup from `~/.leo/skills/<name>/SKILL.md`. Each SKILL.md starts with a YAML frontmatter block, followed by instructions the model reads after calling `load_skill`:
 
 ```markdown
