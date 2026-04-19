@@ -5,7 +5,7 @@ An LLM-based agent framework built from scratch on raw LLM APIs.
 ## Requirements
 
 - Python 3.10+
-- A running OpenAI-compatible LLM server. The default target is a local [vLLM](https://github.com/vllm-project/vllm) serving `Qwen/Qwen3.5-35B-A3B-FP8` at `http://localhost:8000/v1`; see `CLAUDE.md` for the `vllm serve` command. Override via `LEO_LLM_BASE_URL` / `LEO_LLM_MODEL` / `LEO_LLM_API_KEY`.
+- A running OpenAI-compatible LLM server. The default target is a local [vLLM](https://github.com/vllm-project/vllm) serving `Qwen/Qwen3.6-35B-A3B-FP8` at `http://localhost:8000/v1`; see `CLAUDE.md` for the `vllm serve` command. Override via `LEO_LLM_BASE_URL` / `LEO_LLM_MODEL` / `LEO_LLM_API_KEY`.
 - [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for sandboxing tool-invoked shell commands.
 
 ## Setup
