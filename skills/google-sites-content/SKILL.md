@@ -9,13 +9,17 @@ description: >-
 
 # When to use this
 
-Load this skill when `web_fetch` on a page returns mostly navigation text,
-a welcome message, or obviously incomplete content, AND the page is hosted
-on Google Sites. Signals:
+**Load this skill BEFORE running any bash command, as soon as either of
+these is true:**
 
-- URL is `sites.google.com/...` or the page source contains `google.com/sites`,
-  `DOCS_timing`, or `drive.google.com/viewer/main`.
-- `curl -s <url> | head` shows a lot of obfuscated JavaScript and `<script nonce="...">`.
+- `web_fetch` on the URL returned mostly navigation / welcome text, a "stay
+  informed by clicking" message, or otherwise obviously incomplete content.
+- The URL is `sites.google.com/...`, or the raw HTML contains
+  `DOCS_timing`, `drive.google.com/viewer/main`, or `<script nonce="...">`
+  with very little visible body text.
+
+Do not attempt ad-hoc grep/curl exploration first — it almost always wastes
+turns on JavaScript blobs. Load the skill and follow the recipe.
 
 # Recipe
 
@@ -36,12 +40,30 @@ resource that matches the user's question.
 ```bash
 FOLDER_ID="..."
 curl -s "https://drive.google.com/embeddedfolderview?id=$FOLDER_ID" > /tmp/folder.html
-# Each entry is a file ID + filename:
-grep -oE 'file/d/[0-9a-zA-Z_-]+' /tmp/folder.html | sort -u
 ```
 
-To see filenames alongside IDs, grep for the surrounding `<div class="flip-entry">`
-blocks in `/tmp/folder.html`.
+**Extract (file_id, filename) pairs — do not skip this step.** The folder
+HTML lists each entry with both an embedded link and a visible title; you
+need both so downstream steps and your final answer can reference files
+by their real names.
+
+```bash
+python3 - <<'PY'
+import re
+html = open("/tmp/folder.html").read()
+titles = re.findall(r'flip-entry-title[^>]*>([^<]+)<', html)
+ids = list(dict.fromkeys(re.findall(r'file/d/([0-9a-zA-Z_-]+)', html)))
+for fid, title in zip(ids, titles):
+    print(f"{fid}\t{title.strip()}")
+PY
+```
+
+**Warning: do NOT make up filenames from the order of file IDs.** The real
+filenames in the folder HTML are authoritative — e.g., `2026-03 MVHS
+Newsletter March 2026`. If you save a downloaded PDF to `/tmp/<something>.pdf`,
+name it from the real title (e.g. `/tmp/2026-03.pdf`), not from a positional
+guess. Mislabeling the file will cause you to cite the wrong source in
+your final answer.
 
 ### Step 2b. Google Doc (plain text export)
 
@@ -71,6 +93,15 @@ curl -L -s "https://docs.google.com/uc?export=download&id=$FILE_ID" | pdftotext 
 ```bash
 grep -i -C 2 "<search terms>" /tmp/out.txt
 ```
+
+### Step 4. Quote correctly in the final answer
+
+**When you quote the source in your reply to the user, pull full paragraphs,
+not grep line-matches.** After finding the hit in Step 3, re-run with wider
+context (`grep -B 2 -A 10 "<term>"`) or just dump the whole extracted file
+and read the surrounding paragraph. Never stitch `grep | head` output into
+a quote — it produces fragmented text that truncates mid-sentence and
+misrepresents the source.
 
 # Tips
 
