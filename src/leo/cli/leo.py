@@ -51,6 +51,8 @@ COMMANDS_HELP = (
     "  /show-toolcall-off  hide tool-call output (default)\n"
     "  /show-think-on      print model thinking content\n"
     "  /show-think-off     hide model thinking content (default)\n"
+    "  /show-all-on        show both think and toolcall\n"
+    "  /show-all-off       hide both think and toolcall\n"
     "  /status             show current settings, turn count and token usage\n"
     "  /tools              list installed tools\n"
     "  /skills             list installed skills\n"
@@ -166,6 +168,16 @@ def main() -> None:
         if user_input == "/show-think-off":
             show_think = False
             print("(show-think: off)")
+            continue
+        if user_input == "/show-all-on":
+            show_think = True
+            show_tool_call = True
+            print("(show-think: on, show-toolcall: on)")
+            continue
+        if user_input == "/show-all-off":
+            show_think = False
+            show_tool_call = False
+            print("(show-think: off, show-toolcall: off)")
             continue
         if user_input == "/tools":
             for t in TOOLS_SCHEMA:
