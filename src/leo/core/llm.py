@@ -15,6 +15,7 @@ except ImportError:
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_API_KEY = "EMPTY"
+DEFAULT_MAX_TOKENS = 262144
 
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY = 1.0
@@ -38,6 +39,8 @@ class LLM:
         self.model = model or os.environ.get("LEO_LLM_MODEL", DEFAULT_MODEL)
         self.base_url = base_url or os.environ.get("LEO_LLM_BASE_URL", DEFAULT_BASE_URL)
         self.api_key = api_key or os.environ.get("LEO_LLM_API_KEY", DEFAULT_API_KEY)
+        self.max_tokens = int(os.environ.get("LEO_LLM_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+        self.last_total_tokens = 0
         client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         if wrap_openai is not None and os.environ.get("LANGSMITH_TRACING", "").lower() == "true":
             client = wrap_openai(client)
@@ -59,6 +62,8 @@ class LLM:
         for attempt in range(RETRY_MAX_ATTEMPTS):
             try:
                 response = self.client.chat.completions.create(**kwargs)
+                if response.usage is not None:
+                    self.last_total_tokens = response.usage.total_tokens
                 return response.choices[0].message
             except Exception as e:
                 if attempt == RETRY_MAX_ATTEMPTS - 1 or not _is_retryable(e):

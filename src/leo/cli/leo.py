@@ -110,6 +110,8 @@ def main() -> None:
         print(f"workspace:     {workspace}")
         print(f"skills:        {len(skills)} loaded")
         print(f"turns:         {sum(1 for m in messages if m['role'] == 'user')}")
+        pct = llm.last_total_tokens / llm.max_tokens * 100 if llm.max_tokens else 0.0
+        print(f"context:       {llm.last_total_tokens:,} / {llm.max_tokens:,} tokens ({pct:.1f}%)")
 
     print(render_leo_banner())
     print_status()
