@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import random
+import time
 
+import openai
 from openai import OpenAI
 
 try:
@@ -12,6 +15,17 @@ except ImportError:
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_API_KEY = "EMPTY"
+
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BASE_DELAY = 1.0
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError)):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        return 500 <= getattr(exc, "status_code", 0) < 600
+    return False
 
 
 class LLM:
@@ -42,5 +56,13 @@ class LLM:
         }
         if tools:
             kwargs["tools"] = tools
-        response = self.client.chat.completions.create(**kwargs)
-        return response.choices[0].message
+        for attempt in range(RETRY_MAX_ATTEMPTS):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message
+            except Exception as e:
+                if attempt == RETRY_MAX_ATTEMPTS - 1 or not _is_retryable(e):
+                    raise
+                delay = RETRY_BASE_DELAY * (2 ** attempt) + random.random()
+                print(f"\n(llm retry {attempt + 1}/{RETRY_MAX_ATTEMPTS - 1} after {type(e).__name__}: sleeping {delay:.1f}s)")
+                time.sleep(delay)
