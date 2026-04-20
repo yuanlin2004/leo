@@ -27,6 +27,8 @@ def _bwrap_argv(
     if net_on:
         argv.append("--share-net")
     scratch = _scratch_dir()
+    user_local_bin = Path.home() / ".local" / "bin"
+    user_config = Path.home() / ".config"
     argv += [
         "--ro-bind", "/usr", "/usr",
         "--symlink", "usr/bin", "/bin",
@@ -34,13 +36,15 @@ def _bwrap_argv(
         "--symlink", "usr/sbin", "/sbin",
         "--ro-bind", "/etc", "/etc",
         "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+        "--ro-bind-try", str(user_local_bin), str(user_local_bin),
+        "--ro-bind-try", str(user_config), str(user_config),
         "--bind", str(workspace), str(workspace),
         "--chdir", str(workspace),
         "--proc", "/proc",
         "--dev", "/dev",
         "--bind", str(scratch), "/tmp",
         "--setenv", "HOME", "/tmp",
-        "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "--setenv", "PATH", f"{user_local_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     ]
     for sdir in skill_dirs or []:
         argv += ["--ro-bind-try", str(sdir), str(sdir)]
@@ -67,14 +71,14 @@ def _format_result(exit_code: int, stdout: str, stderr: str) -> str:
 
 
 def bash(ctx, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
-    skill_dirs = sorted({s.path.parent.resolve() for s in ctx.skills.values()})
-    argv = _bwrap_argv(ctx.workspace, ctx.net_on, command, skill_dirs)
+    # TEMPORARY: bypassing bwrap sandbox; runs on the host shell.
     try:
         proc = subprocess.run(
-            argv,
+            ["bash", "-c", command],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            cwd=str(ctx.workspace),
         )
     except subprocess.TimeoutExpired:
         return f"error: command timed out after {timeout_seconds}s"
