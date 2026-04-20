@@ -19,7 +19,7 @@ This skill drives Google Sheets through the [`gogcli`](https://github.com/steipe
    ```bash
    export GOG_KEYRING_BACKEND=file
    export GOG_KEYRING_PASSWORD='<choose a strong passphrase>'
-   gog auth add you@gmail.com
+   gog auth add <you>@gmail.com
    gog auth list   # verify
    ```
 
