@@ -35,7 +35,7 @@ pip install -e .
 docker run -d --name vllm --privileged --gpus all --network host --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   vllm-node \
-  bash -c "vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
+  bash -c "vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
     --port 8000 --host 0.0.0.0 \
     --max-model-len 262144 \
     --max-num-batched-tokens 4096 \
@@ -64,7 +64,7 @@ Leo loads `~/.env` first, then a `.env` in the current working directory (via `p
 
 - `TAVILY_API_KEY` — required for the `web_search` tool.
 - `LEO_LLM_BASE_URL` — defaults to `http://localhost:8000/v1`.
-- `LEO_LLM_MODEL` — defaults to `Qwen/Qwen3.5-35B-A3B-FP8`.
+- `LEO_LLM_MODEL` — defaults to `Qwen/Qwen3.6-35B-A3B-FP8`.
 - `LEO_LLM_API_KEY` — defaults to `EMPTY` (vLLM ignores it but the SDK requires something).
 
 `.env` is gitignored.
