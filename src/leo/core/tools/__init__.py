@@ -7,6 +7,16 @@ from typing import Callable
 
 from leo.core.skill_core import Skill
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*_args, **_kwargs):
+        def _decorator(fn):
+            return fn
+        if _args and callable(_args[0]):
+            return _args[0]
+        return _decorator
+
 
 @dataclass
 class ToolContext:
@@ -35,8 +45,13 @@ def dispatch(name: str, arguments_json: str, ctx: ToolContext) -> str:
         kwargs = json.loads(arguments_json) if arguments_json else {}
     except json.JSONDecodeError as e:
         return f"error: invalid arguments JSON: {e}"
+
+    @traceable(name=name, run_type="tool")
+    def _invoke(**call_kwargs):
+        return fn(ctx, **call_kwargs)
+
     try:
-        return fn(ctx, **kwargs)
+        return _invoke(**kwargs)
     except Exception as e:
         return f"error: {type(e).__name__}: {e}"
 

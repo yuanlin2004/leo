@@ -23,6 +23,18 @@ from leo.core.llm import LLM
 from leo.core.skill_core import discover_skills
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
 
+try:
+    from langsmith import trace as _ls_trace
+except ImportError:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ls_trace(*_args, **_kwargs):
+        class _Noop:
+            def end(self, **_k):
+                pass
+        yield _Noop()
+
 DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 SKILLS_ROOT = Path.home() / ".leo" / "skills"
 
@@ -48,6 +60,7 @@ COMMANDS_HELP = (
 
 
 def main() -> None:
+    load_dotenv(Path.home() / ".env")
     load_dotenv()
 
     parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
@@ -204,52 +217,59 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
         quiet = not show_think and not show_tool_call
         dot_count = 0
-        while True:
-            msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
-            think_text, reply_text = _split_think(msg.content)
-            if show_think:
-                reasoning = getattr(msg, "reasoning_content", None) or think_text
-                if reasoning:
-                    print(f"\n(think) {reasoning}")
-            entry: dict = {"role": "assistant", "content": msg.content}
-            if msg.tool_calls:
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ]
-            messages.append(entry)
-            if not msg.tool_calls:
-                if dot_count > 0:
-                    print("\r" + " " * dot_count + "\r", end="", flush=True)
-                print(f"\nleo> {reply_text}")
-                break
-            if quiet:
-                print(".", end="", flush=True)
-                dot_count += 1
-            ctx = ToolContext(
-                workspace=workspace,
-                net_on=net_on,
-                skills={s.name: s for s in skills},
-            )
-            for tc in msg.tool_calls:
-                result = dispatch(tc.function.name, tc.function.arguments, ctx)
-                if show_tool_call:
-                    preview = result if len(result) <= 200 else result[:200] + "..."
-                    print(f"\n(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result,
-                    }
+        with _ls_trace(
+            name="turn",
+            run_type="chain",
+            inputs={"user_input": user_input},
+        ) as rt:
+            reply_text = ""
+            while True:
+                msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
+                think_text, reply_text = _split_think(msg.content)
+                if show_think:
+                    reasoning = getattr(msg, "reasoning_content", None) or think_text
+                    if reasoning:
+                        print(f"\n(think) {reasoning}")
+                entry: dict = {"role": "assistant", "content": msg.content}
+                if msg.tool_calls:
+                    entry["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                messages.append(entry)
+                if not msg.tool_calls:
+                    if dot_count > 0:
+                        print("\r" + " " * dot_count + "\r", end="", flush=True)
+                    print(f"\nleo> {reply_text}")
+                    break
+                if quiet:
+                    print(".", end="", flush=True)
+                    dot_count += 1
+                ctx = ToolContext(
+                    workspace=workspace,
+                    net_on=net_on,
+                    skills={s.name: s for s in skills},
                 )
+                for tc in msg.tool_calls:
+                    result = dispatch(tc.function.name, tc.function.arguments, ctx)
+                    if show_tool_call:
+                        preview = result if len(result) <= 200 else result[:200] + "..."
+                        print(f"\n(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        }
+                    )
+            rt.end(outputs={"reply": reply_text})
 
 
 if __name__ == "__main__":

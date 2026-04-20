@@ -4,6 +4,11 @@ import os
 
 from openai import OpenAI
 
+try:
+    from langsmith.wrappers import wrap_openai
+except ImportError:
+    wrap_openai = None
+
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_API_KEY = "EMPTY"
@@ -19,7 +24,10 @@ class LLM:
         self.model = model or os.environ.get("LEO_LLM_MODEL", DEFAULT_MODEL)
         self.base_url = base_url or os.environ.get("LEO_LLM_BASE_URL", DEFAULT_BASE_URL)
         self.api_key = api_key or os.environ.get("LEO_LLM_API_KEY", DEFAULT_API_KEY)
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        if wrap_openai is not None and os.environ.get("LANGSMITH_TRACING", "").lower() == "true":
+            client = wrap_openai(client)
+        self.client = client
 
     def chat(
         self,

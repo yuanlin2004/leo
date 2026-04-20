@@ -60,7 +60,7 @@ Type `/help` inside the REPL for commands.
 
 ### Environment variables
 
-Leo loads a `.env` file from the current working directory on startup (via `python-dotenv`). Values already set in the shell environment take precedence over the file. Recognized keys:
+Leo loads `~/.env` first, then a `.env` in the current working directory (via `python-dotenv`). Later sources do not override keys already set — so shell env wins over project `.env`, which wins over `~/.env`. Recognized keys:
 
 - `TAVILY_API_KEY` — required for the `web_search` tool.
 - `LEO_LLM_BASE_URL` — defaults to `http://localhost:8000/v1`.
@@ -108,6 +108,14 @@ the model invokes them via the `bash` tool.
 ```
 
 At startup, Leo injects `name: description` for each skill into the system prompt. When the model decides a skill is relevant, it calls `load_skill(name)` to read the full body. Use `/skills` in the REPL to list what's installed.
+
+Each skill's directory is read-only mounted into the bash sandbox at its own absolute path, so scripts and assets that live alongside `SKILL.md` (e.g. `~/.leo/skills/my-skill/helper.py`) can be invoked directly.
+
+## Tracing (LangSmith)
+
+Leo emits [LangSmith](https://smith.langchain.com/) traces when `LANGSMITH_TRACING=true`. Each user turn is a parent span with child spans for every LLM call (via `wrap_openai`) and every tool invocation, giving a tree like `turn → [llm_call, tool_call, llm_call, …]`.
+
+`LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` are typically kept in `~/.env` as user-level defaults. Flip tracing on per project by setting `LANGSMITH_TRACING=true` in the project `.env` (or in the shell). Leave it unset — or set to anything other than `true` — and the wrappers no-op with zero runtime cost.
 
 
 # Acknowledgements
