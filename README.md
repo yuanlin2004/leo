@@ -111,6 +111,8 @@ At startup, Leo injects `name: description` for each skill into the system promp
 
 Each skill's directory is read-only mounted into the bash sandbox at its own absolute path, so scripts and assets that live alongside `SKILL.md` (e.g. `~/.leo/skills/my-skill/helper.py`) can be invoked directly.
 
+A set of skills that have been tested for Leo can be found in the `skills-repo` folder. Copy the folder of a skill to `~/.leo/skills`. Some skills need setup, see the `README.md` file that comes with a skill. 
+
 ## Tracing (LangSmith)
 
 Leo emits [LangSmith](https://smith.langchain.com/) traces when `LANGSMITH_TRACING=true`. Each user turn is a parent span with child spans for every LLM call (via `wrap_openai`) and every tool invocation, giving a tree like `turn → [llm_call, tool_call, llm_call, …]`.
