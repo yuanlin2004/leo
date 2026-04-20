@@ -51,7 +51,7 @@ COMMANDS_HELP = (
     "  /show-toolcall-off  hide tool-call output (default)\n"
     "  /show-think-on      print model thinking content\n"
     "  /show-think-off     hide model thinking content (default)\n"
-    "  /status             show current settings and turn count\n"
+    "  /status             show current settings, turn count and token usage\n"
     "  /tools              list installed tools\n"
     "  /skills             list installed skills\n"
     "  /save <file>        save current session to file\n"
