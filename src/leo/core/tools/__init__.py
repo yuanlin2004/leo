@@ -26,14 +26,16 @@ class ToolContext:
 
 
 from . import bash as _bash
+from . import edit as _edit
 from . import skill_tool as _skill_tool
 from . import web as _web
 
-TOOLS_SCHEMA = _bash.SCHEMA + _web.SCHEMA + _skill_tool.SCHEMA
+TOOLS_SCHEMA = _bash.SCHEMA + _web.SCHEMA + _skill_tool.SCHEMA + _edit.SCHEMA
 TOOL_FUNCTIONS: dict[str, Callable[..., str]] = {
     **_bash.FUNCTIONS,
     **_web.FUNCTIONS,
     **_skill_tool.FUNCTIONS,
+    **_edit.FUNCTIONS,
 }
 
 
