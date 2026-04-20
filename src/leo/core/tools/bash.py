@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,6 +30,7 @@ def _bwrap_argv(
     scratch = _scratch_dir()
     user_local_bin = Path.home() / ".local" / "bin"
     user_config = Path.home() / ".config"
+    gogcli_config = user_config / "gogcli"
     argv += [
         "--ro-bind", "/usr", "/usr",
         "--symlink", "usr/bin", "/bin",
@@ -38,14 +40,32 @@ def _bwrap_argv(
         "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
         "--ro-bind-try", str(user_local_bin), str(user_local_bin),
         "--ro-bind-try", str(user_config), str(user_config),
+        # gogcli rewrites its keyring file on token refresh; overlay as rw.
+        "--bind-try", str(gogcli_config), str(gogcli_config),
         "--bind", str(workspace), str(workspace),
         "--chdir", str(workspace),
         "--proc", "/proc",
         "--dev", "/dev",
         "--bind", str(scratch), "/tmp",
         "--setenv", "HOME", "/tmp",
+        "--setenv", "XDG_CONFIG_HOME", str(user_config),
         "--setenv", "PATH", f"{user_local_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     ]
+    for var in ("GOG_KEYRING_BACKEND", "GOG_KEYRING_PASSWORD", "GOG_ACCOUNT"):
+        val = os.environ.get(var)
+        if val is not None:
+            argv += ["--setenv", var, val]
+    # Symlinks in ~/.local/bin (e.g. gog) point outside mounted paths; expose targets.
+    seen: set[Path] = set()
+    if user_local_bin.is_dir():
+        for entry in user_local_bin.iterdir():
+            if not entry.is_symlink():
+                continue
+            target_dir = entry.resolve().parent
+            if target_dir in seen:
+                continue
+            seen.add(target_dir)
+            argv += ["--ro-bind-try", str(target_dir), str(target_dir)]
     for sdir in skill_dirs or []:
         argv += ["--ro-bind-try", str(sdir), str(sdir)]
     argv += ["bash", "-c", command]
@@ -71,14 +91,14 @@ def _format_result(exit_code: int, stdout: str, stderr: str) -> str:
 
 
 def bash(ctx, command: str, timeout_seconds: int = DEFAULT_TIMEOUT) -> str:
-    # TEMPORARY: bypassing bwrap sandbox; runs on the host shell.
+    skill_dirs = sorted({s.path.parent.resolve() for s in ctx.skills.values()})
+    argv = _bwrap_argv(ctx.workspace, ctx.net_on, command, skill_dirs)
     try:
         proc = subprocess.run(
-            ["bash", "-c", command],
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
-            cwd=str(ctx.workspace),
         )
     except subprocess.TimeoutExpired:
         return f"error: command timed out after {timeout_seconds}s"
