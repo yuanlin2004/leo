@@ -71,6 +71,10 @@ Leo loads `~/.env` first, then a `.env` in the current working directory (via `p
 
 ## Examples
 
+### Example 1: Extract Information from a Webpage that Embeds a Google Sheet
+
+Most cloud based chatbot (e.g. ChatGPT, Gemini, Claude, Grok 2026-04) failed this task. 
+
 ```
 $ leo
 ...
@@ -88,6 +92,32 @@ Based on the [MVMB Members Contact List](https://docs.google.com/spreadsheets/d/
 
 This information is from the 2025-2026 Booster Board contact list for Monta Vista High School Music Boosters (MVMB).
 ```
+
+### Example 2: Build a Parpahty LLM Wiki 
+
+Create the schema file. 
+
+```
+$ leo
+...
+you> Read the article at https://gist.githubusercontent.com/karpathy/442a6bf555914893e9891c11519de94f/raw/ac46de1ad27f92b28ac95459c782c07f6b8c964a/llm-wiki.md and create a llm-wiki.md file that works at the system prompt for an LLM agent that works as describe in the article.
+
+leo> Now I have the full article. Let me create a system prompt for an LLM that embodies the "LLM Wiki" pattern described by Karpathy.
+
+leo> Done! I've created `llm-wiki.md` — a system prompt file that turns an LLM into a **Wiki Maintainer Agent** as described in Karpathy's article. ...
+```
+
+Launch the agent
+
+```
+$ leo -systemprompt llm-wiki.md
+...
+you> Inject the raw sources from ~/raw and build the wiki.
+
+...
+leo>  The wiki is fully built. Here's the summary: ...
+```
+
 
 ## Skills
 
