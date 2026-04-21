@@ -339,15 +339,8 @@ def main() -> None:
                     ]
                 messages.append(entry)
                 if not msg.tool_calls:
-                    if not state["reply_started"] and reply_text:
-                        print(f"\nleo> {reply_text}")
-                    else:
-                        print()
                     break
-                if state["reply_started"] or state["think_started"]:
-                    print()
-                elif quiet:
-                    print(".", end="", flush=True)
+                print(".", end="", flush=True)
                 ctx = ToolContext(
                     workspace=workspace,
                     net_on=net_on,
