@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 def _split_think(text: str | None) -> tuple[str, str]:
@@ -15,6 +16,57 @@ def _split_think(text: str | None) -> tuple[str, str]:
     think = re.sub(r"^\s*<think>\s*", "", text[:idx], count=1).strip()
     reply = text[idx + len("</think>"):].strip()
     return think, reply
+
+
+class _ThinkStripper:
+    """Streams text with <think>...</think> suppressed (or rerouted) across chunk boundaries."""
+
+    def __init__(self, on_reply, on_think=None, start_in_think=False):
+        self.on_reply = on_reply
+        self.on_think = on_think
+        self.in_think = start_in_think
+        self.buf = ""
+
+    @staticmethod
+    def _partial_tail(text: str, tag: str) -> int:
+        for n in range(min(len(tag) - 1, len(text)), 0, -1):
+            if tag.startswith(text[-n:]):
+                return n
+        return 0
+
+    def feed(self, chunk: str) -> None:
+        text = self.buf + chunk
+        self.buf = ""
+        while text:
+            if self.in_think:
+                i = text.find("</think>")
+                if i == -1:
+                    keep = self._partial_tail(text, "</think>")
+                    emit, self.buf = (text[:-keep], text[-keep:]) if keep else (text, "")
+                    if emit and self.on_think:
+                        self.on_think(emit)
+                    return
+                if i > 0 and self.on_think:
+                    self.on_think(text[:i])
+                text = text[i + len("</think>"):]
+                self.in_think = False
+            else:
+                i = text.find("<think>")
+                if i == -1:
+                    keep = self._partial_tail(text, "<think>")
+                    emit, self.buf = (text[:-keep], text[-keep:]) if keep else (text, "")
+                    if emit:
+                        self.on_reply(emit)
+                    return
+                if i > 0:
+                    self.on_reply(text[:i])
+                text = text[i + len("<think>"):]
+                self.in_think = True
+
+    def flush(self) -> None:
+        if self.buf:
+            (self.on_think if self.in_think and self.on_think else self.on_reply)(self.buf)
+            self.buf = ""
 
 from dotenv import load_dotenv
 
@@ -230,7 +282,6 @@ def main() -> None:
 
         messages.append({"role": "user", "content": user_input})
         quiet = not show_think and not show_tool_call
-        dot_count = 0
         with _ls_trace(
             name="turn",
             run_type="chain",
@@ -238,12 +289,41 @@ def main() -> None:
         ) as rt:
             reply_text = ""
             while True:
-                msg = llm.chat(messages, enable_thinking=think_on, tools=TOOLS_SCHEMA)
-                think_text, reply_text = _split_think(msg.content)
-                if show_think:
-                    reasoning = getattr(msg, "reasoning_content", None) or think_text
-                    if reasoning:
-                        print(f"\n(think) {reasoning}")
+                state = {"reply_started": False, "think_started": False}
+
+                def on_reply(s: str) -> None:
+                    if not state["reply_started"]:
+                        s = s.lstrip()
+                        if not s:
+                            return
+                        sys.stdout.write("\nleo> ")
+                        state["reply_started"] = True
+                    sys.stdout.write(s)
+                    sys.stdout.flush()
+
+                def on_think(s: str) -> None:
+                    if not show_think:
+                        return
+                    if not state["think_started"]:
+                        sys.stdout.write("\n(think) ")
+                        state["think_started"] = True
+                    sys.stdout.write(s)
+                    sys.stdout.flush()
+
+                stripper = _ThinkStripper(
+                    on_reply=on_reply,
+                    on_think=on_think,
+                    start_in_think=think_on,
+                )
+                msg = llm.chat(
+                    messages,
+                    enable_thinking=think_on,
+                    tools=TOOLS_SCHEMA,
+                    on_text=stripper.feed,
+                    on_reasoning=on_think,
+                )
+                stripper.flush()
+                _, reply_text = _split_think(msg.content)
                 entry: dict = {"role": "assistant", "content": msg.content}
                 if msg.tool_calls:
                     entry["tool_calls"] = [
@@ -259,13 +339,15 @@ def main() -> None:
                     ]
                 messages.append(entry)
                 if not msg.tool_calls:
-                    if dot_count > 0:
-                        print("\r" + " " * dot_count + "\r", end="", flush=True)
-                    print(f"\nleo> {reply_text}")
+                    if not state["reply_started"] and reply_text:
+                        print(f"\nleo> {reply_text}")
+                    else:
+                        print()
                     break
-                if quiet:
+                if state["reply_started"] or state["think_started"]:
+                    print()
+                elif quiet:
                     print(".", end="", flush=True)
-                    dot_count += 1
                 ctx = ToolContext(
                     workspace=workspace,
                     net_on=net_on,
