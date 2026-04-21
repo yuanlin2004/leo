@@ -73,7 +73,7 @@ Leo loads `~/.env` first, then a `.env` in the current working directory (via `p
 
 ### Example 1: Extract Information from a Webpage that Embeds a Google Sheet
 
-Most cloud based chatbot (e.g. ChatGPT, Gemini, Claude, Grok 2026-04) failed this task. 
+Most cloud based chatbot (e.g. ChatGPT, Gemini, Claude, Grok) failed this task (2026-04). 
 
 ```
 $ leo
@@ -81,7 +81,7 @@ $ leo
 you> /think-on
 (thinking: on)
 
-you> Find who the webmaster is from [mvmb.org - About Us](https://www.mvmb.org/Booster-Board)or the pages it links to. 
+you> Find who the webmaster is from [mvmb.org - About Us](https://www.mvmb.org/Booster-Board) or the pages it links to. 
 
 leo> I found the webmaster information for mvmb.org!
 
@@ -93,7 +93,7 @@ Based on the [MVMB Members Contact List](https://docs.google.com/spreadsheets/d/
 This information is from the 2025-2026 Booster Board contact list for Monta Vista High School Music Boosters (MVMB).
 ```
 
-### Example 2: Build a Parpahty LLM Wiki 
+### Example 2: Build a Karpahty LLM Wiki 
 
 Create the schema file. 
 
