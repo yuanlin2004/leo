@@ -113,6 +113,194 @@ COMMANDS_HELP = (
 )
 
 
+TOGGLES: dict[str, tuple[dict, str]] = {
+    "/think-on":          ({"think_on": True},                              "thinking: on"),
+    "/think-off":         ({"think_on": False},                             "thinking: off"),
+    "/net-on":            ({"net_on": True},                                "network: on"),
+    "/net-off":           ({"net_on": False},                               "network: off"),
+    "/show-toolcall-on":  ({"show_tool_call": True},                        "show-toolcall: on"),
+    "/show-toolcall-off": ({"show_tool_call": False},                       "show-toolcall: off"),
+    "/show-think-on":     ({"show_think": True},                            "show-think: on"),
+    "/show-think-off":    ({"show_think": False},                           "show-think: off"),
+    "/show-all-on":       ({"show_think": True, "show_tool_call": True},   "show-think: on, show-toolcall: on"),
+    "/show-all-off":      ({"show_think": False, "show_tool_call": False}, "show-think: off, show-toolcall: off"),
+}
+
+
+def _apply_toggle(state: dict, cmd: str) -> str | None:
+    """Apply a toggle command to state. Returns status message or None if unrecognized."""
+    entry = TOGGLES.get(cmd)
+    if entry is None:
+        return None
+    state.update(entry[0])
+    return entry[1]
+
+
+def _parse_task_file(text: str) -> tuple[str, list[str]]:
+    """Split a task file into (prompt, trailing slash commands)."""
+    lines = text.splitlines()
+    end = len(lines)
+    while end > 0 and lines[end - 1].strip() == "":
+        end -= 1
+    cmd_start = end
+    while cmd_start > 0 and lines[cmd_start - 1].strip().startswith("/"):
+        cmd_start -= 1
+    cmds = [lines[i].strip() for i in range(cmd_start, end)]
+    prompt = "\n".join(lines[:cmd_start]).strip()
+    return prompt, cmds
+
+
+def run_turn(
+    messages: list[dict],
+    *,
+    llm: LLM,
+    skills,
+    workspace: Path,
+    think_on: bool,
+    net_on: bool,
+    on_reply,
+    on_think,
+    on_tool,
+) -> str:
+    """Drive LLM + tool-call loop until no more tool calls. Returns final reply text."""
+    reply_text = ""
+    while True:
+        stripper = _ThinkStripper(on_reply=on_reply, on_think=on_think, start_in_think=think_on)
+        msg = llm.chat(
+            messages,
+            enable_thinking=think_on,
+            tools=TOOLS_SCHEMA,
+            on_text=stripper.feed,
+            on_reasoning=on_think,
+        )
+        stripper.flush()
+        _, reply_text = _split_think(msg.content)
+        entry: dict = {"role": "assistant", "content": msg.content}
+        if msg.tool_calls:
+            entry["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        messages.append(entry)
+        if not msg.tool_calls:
+            return reply_text
+        ctx = ToolContext(workspace=workspace, net_on=net_on, skills={s.name: s for s in skills})
+        for tc in msg.tool_calls:
+            result = dispatch(tc.function.name, tc.function.arguments, ctx)
+            on_tool(tc.function.name, tc.function.arguments, result)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+
+def run_task_mode(
+    task_file: str,
+    system_prompt: str,
+    skills,
+    llm: LLM,
+    workspace: Path,
+) -> int:
+    prompt, cmds = _parse_task_file(Path(task_file).read_text())
+    if not prompt:
+        print(f"(task file {task_file} contains no prompt)", file=sys.stderr)
+        return 2
+
+    state = {"think_on": True, "net_on": True, "show_tool_call": False, "show_think": False}
+    debug = False
+    cmd_notes: list[str] = []
+    for c in cmds:
+        if c == "/debug":
+            debug = True
+            cmd_notes.append("applied /debug")
+        elif _apply_toggle(state, c) is not None:
+            cmd_notes.append(f"applied {c}")
+        else:
+            cmd_notes.append(f"ignored unsupported command: {c}")
+
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    think_chunks: list[str] = []
+    tool_records: list[str] = []
+    reply_text = ""
+    error: str | None = None
+    flags = {"reply_started": False, "think_started": False}
+
+    def on_reply(s: str) -> None:
+        if not debug:
+            return
+        if not flags["reply_started"]:
+            s = s.lstrip()
+            if not s:
+                return
+            sys.stdout.write("\nleo> ")
+            flags["reply_started"] = True
+        sys.stdout.write(s)
+        sys.stdout.flush()
+
+    def on_think(s: str) -> None:
+        think_chunks.append(s)
+        if not debug:
+            return
+        if not flags["think_started"]:
+            sys.stdout.write("\n(think) ")
+            flags["think_started"] = True
+        sys.stdout.write(s)
+        sys.stdout.flush()
+
+    def on_tool(name: str, args: str, result: str) -> None:
+        preview = result if len(result) <= 200 else result[:200] + "..."
+        tool_records.append(f"{name}({args}) -> {preview}")
+        if debug:
+            print(f"\n(tool {name}({args}) -> {preview})")
+            flags["reply_started"] = False
+            flags["think_started"] = False
+
+    if debug:
+        print("=== Task (debug) ===")
+        print(f"file: {task_file}\n")
+
+    try:
+        reply_text = run_turn(
+            messages, llm=llm, skills=skills, workspace=workspace,
+            think_on=state["think_on"], net_on=state["net_on"],
+            on_reply=on_reply, on_think=on_think, on_tool=on_tool,
+        )
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    if debug:
+        print()
+
+    turns = sum(1 for m in messages if m["role"] == "assistant")
+
+    print("=== Task ===")
+    print(f"file:   {task_file}")
+    if cmds:
+        print("commands:")
+        for note in cmd_notes:
+            print(f"  {note}")
+    print("\n=== Monologue ===")
+    print("".join(think_chunks).strip() or "(no thinking content captured)")
+    if tool_records:
+        print("\n--- tool calls ---")
+        for r in tool_records:
+            print(f"- {r}")
+    print("\n=== Final Result ===")
+    print(reply_text.strip() or "(no final reply)")
+    print("\n=== Status ===")
+    print(f"outcome:    {'error' if error else 'completed'}")
+    if error:
+        print(f"error:      {error}")
+    print(f"turns:      {turns}")
+    print(f"tool_calls: {len(tool_records)}")
+    pct = llm.last_total_tokens / llm.max_tokens * 100 if llm.max_tokens else 0.0
+    print(f"context:    {llm.last_total_tokens:,} / {llm.max_tokens:,} tokens ({pct:.1f}%)")
+    return 1 if error else 0
+
+
 def main() -> None:
     load_dotenv(Path.home() / ".env")
     load_dotenv()
@@ -122,6 +310,11 @@ def main() -> None:
         "-sysprompt",
         metavar="FILE",
         help="path to a file whose contents are used as the system prompt",
+    )
+    parser.add_argument(
+        "--task",
+        metavar="FILE",
+        help="run non-interactively using FILE's contents as the initial user prompt",
     )
     args = parser.parse_args()
 
@@ -147,20 +340,21 @@ def main() -> None:
         )
 
     llm = LLM()
-    think_on = True
-    net_on = True
-    show_tool_call = False
-    show_think = False
     workspace = Path.cwd().resolve()
+
+    if args.task:
+        sys.exit(run_task_mode(args.task, system_prompt, skills, llm, workspace))
+
+    state = {"think_on": True, "net_on": True, "show_tool_call": False, "show_think": False}
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     def print_status() -> None:
         print(f"model:         {llm.model}")
         print(f"base_url:      {llm.base_url}")
-        print(f"thinking:      {'on' if think_on else 'off'}")
-        print(f"network:       {'on' if net_on else 'off'}")
-        print(f"show-toolcall: {'on' if show_tool_call else 'off'}")
-        print(f"show-think:    {'on' if show_think else 'off'}")
+        print(f"thinking:      {'on' if state['think_on'] else 'off'}")
+        print(f"network:       {'on' if state['net_on'] else 'off'}")
+        print(f"show-toolcall: {'on' if state['show_tool_call'] else 'off'}")
+        print(f"show-think:    {'on' if state['show_think'] else 'off'}")
         print(f"workspace:     {workspace}")
         print(f"skills:        {len(skills)} loaded")
         print(f"turns:         {sum(1 for m in messages if m['role'] == 'user')}")
@@ -182,54 +376,16 @@ def main() -> None:
             continue
         if user_input in ("/exit", "/quit"):
             break
+        toggle_msg = _apply_toggle(state, user_input)
+        if toggle_msg is not None:
+            print(f"({toggle_msg})")
+            continue
         if user_input == "/help":
             print(COMMANDS_HELP)
             continue
         if user_input == "/reset":
             messages = [{"role": "system", "content": system_prompt}]
             print("(history cleared)")
-            continue
-        if user_input == "/think-on":
-            think_on = True
-            print("(thinking: on)")
-            continue
-        if user_input == "/think-off":
-            think_on = False
-            print("(thinking: off)")
-            continue
-        if user_input == "/net-on":
-            net_on = True
-            print("(network: on)")
-            continue
-        if user_input == "/net-off":
-            net_on = False
-            print("(network: off)")
-            continue
-        if user_input == "/show-toolcall-on":
-            show_tool_call = True
-            print("(show-toolcall: on)")
-            continue
-        if user_input == "/show-toolcall-off":
-            show_tool_call = False
-            print("(show-toolcall: off)")
-            continue
-        if user_input == "/show-think-on":
-            show_think = True
-            print("(show-think: on)")
-            continue
-        if user_input == "/show-think-off":
-            show_think = False
-            print("(show-think: off)")
-            continue
-        if user_input == "/show-all-on":
-            show_think = True
-            show_tool_call = True
-            print("(show-think: on, show-toolcall: on)")
-            continue
-        if user_input == "/show-all-off":
-            show_think = False
-            show_tool_call = False
-            print("(show-think: off, show-toolcall: off)")
             continue
         if user_input == "/tools":
             for t in TOOLS_SCHEMA:
@@ -253,10 +409,7 @@ def main() -> None:
                 continue
             path = Path(parts[1]).expanduser()
             path.write_text(
-                json.dumps(
-                    {"messages": messages, "think_on": think_on},
-                    indent=2,
-                )
+                json.dumps({"messages": messages, "think_on": state["think_on"]}, indent=2)
             )
             print(f"(saved to {path})")
             continue
@@ -272,92 +425,51 @@ def main() -> None:
                 print(f"(load failed: {e})")
                 continue
             messages = data["messages"]
-            think_on = data.get("think_on", think_on)
+            state["think_on"] = data.get("think_on", state["think_on"])
             print(f"(loaded from {path})")
             continue
-        
+
         if user_input.startswith("/"):
             print(COMMANDS_HELP)
             continue
 
         messages.append({"role": "user", "content": user_input})
-        quiet = not show_think and not show_tool_call
-        with _ls_trace(
-            name="turn",
-            run_type="chain",
-            inputs={"user_input": user_input},
-        ) as rt:
-            reply_text = ""
-            while True:
-                state = {"reply_started": False, "think_started": False}
+        with _ls_trace(name="turn", run_type="chain", inputs={"user_input": user_input}) as rt:
+            flags = {"reply_started": False, "think_started": False}
 
-                def on_reply(s: str) -> None:
-                    if not state["reply_started"]:
-                        s = s.lstrip()
-                        if not s:
-                            return
-                        sys.stdout.write("\nleo> ")
-                        state["reply_started"] = True
-                    sys.stdout.write(s)
-                    sys.stdout.flush()
-
-                def on_think(s: str) -> None:
-                    if not show_think:
+            def on_reply(s: str) -> None:
+                if not flags["reply_started"]:
+                    s = s.lstrip()
+                    if not s:
                         return
-                    if not state["think_started"]:
-                        sys.stdout.write("\n(think) ")
-                        state["think_started"] = True
-                    sys.stdout.write(s)
-                    sys.stdout.flush()
+                    sys.stdout.write("\nleo> ")
+                    flags["reply_started"] = True
+                sys.stdout.write(s)
+                sys.stdout.flush()
 
-                stripper = _ThinkStripper(
-                    on_reply=on_reply,
-                    on_think=on_think,
-                    start_in_think=think_on,
-                )
-                msg = llm.chat(
-                    messages,
-                    enable_thinking=think_on,
-                    tools=TOOLS_SCHEMA,
-                    on_text=stripper.feed,
-                    on_reasoning=on_think,
-                )
-                stripper.flush()
-                _, reply_text = _split_think(msg.content)
-                entry: dict = {"role": "assistant", "content": msg.content}
-                if msg.tool_calls:
-                    entry["tool_calls"] = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ]
-                messages.append(entry)
-                if not msg.tool_calls:
-                    break
-                print(".", end="", flush=True)
-                ctx = ToolContext(
-                    workspace=workspace,
-                    net_on=net_on,
-                    skills={s.name: s for s in skills},
-                )
-                for tc in msg.tool_calls:
-                    result = dispatch(tc.function.name, tc.function.arguments, ctx)
-                    if show_tool_call:
-                        preview = result if len(result) <= 200 else result[:200] + "..."
-                        print(f"\n(tool {tc.function.name}({tc.function.arguments}) -> {preview})")
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": result,
-                        }
-                    )
+            def on_think(s: str) -> None:
+                if not state["show_think"]:
+                    return
+                if not flags["think_started"]:
+                    sys.stdout.write("\n(think) ")
+                    flags["think_started"] = True
+                sys.stdout.write(s)
+                sys.stdout.flush()
+
+            def on_tool(name: str, args: str, result: str) -> None:
+                if state["show_tool_call"]:
+                    preview = result if len(result) <= 200 else result[:200] + "..."
+                    print(f"\n(tool {name}({args}) -> {preview})")
+                else:
+                    print(".", end="", flush=True)
+                flags["reply_started"] = False
+                flags["think_started"] = False
+
+            reply_text = run_turn(
+                messages, llm=llm, skills=skills, workspace=workspace,
+                think_on=state["think_on"], net_on=state["net_on"],
+                on_reply=on_reply, on_think=on_think, on_tool=on_tool,
+            )
             rt.end(outputs={"reply": reply_text})
 
 
