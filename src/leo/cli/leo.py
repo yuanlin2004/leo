@@ -302,8 +302,8 @@ def run_task_mode(
 
 
 def main() -> None:
-    load_dotenv(Path.home() / ".env")
     load_dotenv()
+    load_dotenv(Path.home() / ".env")
 
     parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
     parser.add_argument(
