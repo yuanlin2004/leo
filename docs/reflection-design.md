@@ -24,9 +24,6 @@ answers "what do I know?"; reflection answers "how should I behave?"
 - **Lessons DB.** The on-disk collection under `~/.leo/lessons/`.
   Grep-able, diffable, human-editable.
 
-Note on naming overlap: Hermes's Hindsight plugin uses "reflect" for
-query-time synthesis across existing memories. Our "reflect" is
-post-hoc lesson extraction from a trace. Different operation, same word.
 
 ## Lifecycle — when reflection runs
 
