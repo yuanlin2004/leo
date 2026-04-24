@@ -61,7 +61,7 @@ Type `/help` inside the chat REPL for commands.
 
 ### Environment variables
 
-Leo loads `~/.env` first, then a `.env` in the current working directory (via `python-dotenv`). Later sources do not override keys already set — so shell env wins over project `.env`, which wins over `~/.env`. Recognized keys:
+Leo loads a `.env` in the current working directory first, then `~/.env` (via `python-dotenv`). Later sources do not override keys already set — so shell env wins over project `.env`, which wins over `~/.env`. Recognized keys:
 
 - `TAVILY_API_KEY` — required for the `web_search` tool.
 - `LEO_LLM_BASE_URL` — defaults to `http://localhost:8000/v1`.

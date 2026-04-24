@@ -69,7 +69,7 @@ triggers: [keyword, keyword, ...]   # cheap retrieval filter
 applies_when: <one-line condition>  # human-readable self-gate
 created: <ISO date>
 updated: <ISO date>
-source_trace: artifacts/<ts>-<slug>.json  # relative to ~/.leo/lessons/
+source_trace: artifacts/<ts>-<slug>.json  # relative to the lesson's root
 ---
 
 Rule: <one sentence>
@@ -113,17 +113,41 @@ More predicate types can be added later without a schema break.
 
 ## Storage layout
 
+Lessons load from an ordered **list of roots**, not a single folder.
+Each root is self-contained — its own `index.json`, its own
+`artifacts/` — and has the same internal layout:
+
 ```
-~/.leo/lessons/
+<root>/
   index.json                  # flat array of {id, title, category, scope, triggers, updated}
   <id>.md                     # one file per lesson
   artifacts/
     <timestamp>-<slug>.json   # trace snapshots referenced by source_trace
 ```
 
-The index is read once at startup and refreshed after every write.
-Lesson bodies are loaded on demand — only when a lesson is actually
-selected for injection. The full DB never lives in memory.
+In v1 the list is `[~/.leo/lessons/]` only. The loader iterates the
+list; retrieval merges results across roots. When two roots contain
+the same `id`, the earlier root wins.
+
+Writes always target a specific root. v1 writes go to
+`~/.leo/lessons/`. The reflector prompt will later include the target
+root so it can be chosen per-lesson (e.g. project-scoped lessons →
+project root).
+
+This design accommodates two growth paths without schema change:
+
+1. **Project-local lessons.** Add `<cwd>/.leo/lessons/` to the root
+   list when present, so project-scoped lessons can live in the repo
+   and travel with it. Mirrors the `~/.leo/skills/` vs in-repo
+   `skills-repo/` split already used for skills.
+2. **Sharding.** When `~/.leo/lessons/` grows uncomfortable, split it
+   into subdirs (by scope, by category, by date — whatever) and
+   register each subdir as its own root.
+
+The index within a root is read once at startup and refreshed after
+every write to that root. Lesson bodies are loaded on demand — only
+when a lesson is actually selected for injection. The full DB never
+lives in memory.
 
 Trace snapshots are written at reflection time and referenced by the
 `source_trace` field for audit. If LangSmith tracing is on, the trace
@@ -159,21 +183,58 @@ stable.
 After the LLM emits a response but before the harness dispatches the
 next tool call:
 
-1. **Gotcha pre-dispatch hook.** For each pending tool call, match its
-   `name` and keyword-extracted args against `gotcha` lessons. Matches
-   are appended as a fresh system-role message in the running
-   `messages` list, *before* the tool executes.
-2. **Monologue re-retrieval.** Keywords are extracted from: assistant
-   content (including thinking), tool call name + args, and tool
-   result. New matches (not already injected this turn) are appended
-   as a system-role message.
+1. **Gotcha pre-dispatch hook.** For each pending tool call, match
+   its `name` and keyword-extracted args against `gotcha` lessons.
+2. **Replan if any matched.** Lessons are injected as a system-role
+   message and the LLM is re-prompted to revise its action. Without
+   this step, an injected lesson would only influence behavior on the
+   *next* turn — by which point the gotcha has already fired.
+3. **Monologue re-retrieval (post-execution).** After the tool runs,
+   keywords from the tool result, assistant content (including
+   thinking), and tool call args are matched against all categories.
+   New matches (not already injected this turn) are appended as a
+   system-role message. No replan here — the next loop iteration
+   already calls the LLM, which will see the new lessons naturally.
+
+#### The replan step
+
+When the gotcha hook produces matches:
+
+1. Pop the just-emitted assistant message from `messages` (the one
+   containing the pending `tool_calls`).
+2. Append a system-role message with the matched lessons, prefixed:
+
+   ```
+   [System note: New constraints have been introduced based on your
+   pending action. Revise your previous action if needed.]
+   ```
+
+3. Call `llm.chat(messages, ...)` again. The LLM either:
+   - re-emits revised tool calls — the harness uses these and proceeds;
+   - re-emits the same tool calls — the lesson did not apply, proceed;
+   - emits text only (no tool calls) — treat as a final reply for the
+     turn, like any other tool-free response.
+4. The new assistant message goes into `messages` in place of the
+   popped one. The original draft is preserved in the trace snapshot
+   (for future reflection) but not in conversation history.
+
+Iteration cap: at most **2 replans per tool-call boundary**. After
+that the harness logs a warning and dispatches whatever was last
+emitted. The per-turn `injected_ids` set prevents the same lesson
+from triggering successive replans.
+
+Cost note: replans add an LLM round-trip only when a gotcha actually
+matches a pending tool call. In sessions where no gotchas fire, the
+loop is unchanged.
+
+#### Cache and dedup
 
 Mid-loop injections never touch the system prompt. This keeps the
 prefix cache intact up to the first user message; only the suffix
 grows. Borrowed directly from Hermes's frozen-snapshot pattern.
 
 Deduplication: a per-turn `injected_ids: set[str]` prevents the same
-lesson from landing twice in one turn.
+lesson from landing twice in one turn (including across replans).
 
 ## Injection format
 
@@ -328,7 +389,7 @@ Rough module layout (not implementation):
 ```
 src/leo/core/
   lessons/
-    __init__.py          # LessonStore: load/save/index/search
+    __init__.py          # LessonStore: multi-root load/save/index/search
     schema.py            # Lesson dataclass, category enum, scope predicate
     retrieval.py         # keyword match, scope filter, ranking
     injection.py         # render system-prompt block + mid-loop messages
@@ -341,11 +402,24 @@ src/leo/core/
 - Retrieval hook on user-prompt receipt, before `run_turn`.
 - Reflection dispatcher on `/reflect` and on `/exit` / `/quit`.
 - `/lessons ...` command handlers.
-- Pre-dispatch gotcha hook inside `run_turn`'s tool-call loop.
 
-`run_turn` gains one optional parameter: a `LessonStore` reference
-used by the mid-loop hook. When `None` (e.g. in task mode for v1),
-the hook is a no-op.
+`run_turn` gains one optional parameter: a `LessonStore` reference.
+When `None` (e.g. in task mode for v1), all mid-loop hooks are
+no-ops. When set, the loop body becomes:
+
+1. `llm.chat(...)` → assistant message.
+2. If the assistant message has tool calls and gotchas match, run
+   the **replan** subloop: pop the message, append the lesson
+   system-note, re-call `llm.chat(...)`, repeat until no new gotchas
+   match or the replan cap (2) is hit.
+3. Dispatch the (possibly revised) tool calls.
+4. Run **monologue re-retrieval** against the assistant content +
+   tool args + tool results; append matched lessons as a
+   system-role message.
+5. Loop.
+
+The replan subloop is a new internal helper, not exposed outside
+`run_turn`.
 
 ## Alternatives considered
 
@@ -414,3 +488,8 @@ this design adds.
 6. **Lesson versioning.** Update overwrites history. Do we keep a
    git-backed `~/.leo/lessons/.git/`? Not in v1 — users who want
    history can `git init` the directory themselves.
+7. **Replan cap of 2.** Picked by feel. If gotchas are well-scoped,
+   one replan should cover almost every case; two is a safety
+   margin. Worth measuring. If we see frequent cap hits, that is a
+   signal the gotchas themselves are too broad, not that the cap is
+   too low.
