@@ -307,7 +307,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
     parser.add_argument(
-        "-sysprompt",
+        "--sysprompt",
         metavar="FILE",
         help="path to a file whose contents are used as the system prompt",
     )

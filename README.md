@@ -52,11 +52,12 @@ The `--enable-auto-tool-choice` and `--tool-call-parser qwen3_coder` flags are r
 ### 4. Run
 
 ```bash
-leo                       # start the chatbot
-leo -sysprompt my.txt     # use a custom system prompt
+leo                            # start the chatbot
+leo --sysprompt my_sys.txt     # start the chatbot with a custom system prompt
+leo --task instruction.txt.    # start the task mode.
 ```
 
-Type `/help` inside the REPL for commands.
+Type `/help` inside the chat REPL for commands.
 
 ### Environment variables
 
@@ -110,7 +111,7 @@ leo> Done! I've created `llm-wiki.md` — a system prompt file that turns an LLM
 Launch the agent
 
 ```
-$ leo -systemprompt llm-wiki.md
+$ leo --systemprompt llm-wiki.md
 ...
 you> Inject the raw sources from ~/raw and build the wiki.
 
