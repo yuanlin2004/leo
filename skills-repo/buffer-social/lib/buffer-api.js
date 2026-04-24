@@ -189,8 +189,8 @@ export class BufferApi {
    */
   async createPost(input) {
     // Determine mode based on options
-    const mode = input.now ? 'shareNow' : (input.queue ? 'addToQueue' : 'customSchedule');
-    const dueAtParam = input.scheduledAt ? `, dueAt: "${input.scheduledAt}"` : '';
+    const mode = input.now ? 'shareNow' : (input.queue ? 'addToQueue' : 'customScheduled');
+    const dueAtParam = input.scheduledAt ? `dueAt: "${input.scheduledAt}"` : '';
     
     // Build mutation with inline enum values (can't use variables for enums easily)
     const mutation = `
@@ -199,7 +199,8 @@ export class BufferApi {
           text: $text
           channelId: $channelId
           schedulingType: automatic
-          mode: ${mode}${dueAtParam}
+          mode: ${mode}
+	  ${dueAtParam}
         }) {
           ... on PostActionSuccess {
             post {

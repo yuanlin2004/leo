@@ -142,3 +142,4 @@ We welcome contributions! Here's how:
 
 ## LEO Note
 This skill is modified from https://clawhub.ai/ahmadabugosh/buffer-social
+- fixed bugs in lib/buffer-api.js
