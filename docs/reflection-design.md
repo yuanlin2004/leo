@@ -263,7 +263,7 @@ corruption (see *Index corruption* in Open questions). `trigger`
 plays no role in folder placement — every folder can hold lessons
 of any trigger type.
 
-In v1 the root list is `[~/.leo/lessons/]` only. The loader iterates
+In the first implementation, the root list is `[~/.leo/lessons/]` only. The loader iterates
 the list; retrieval merges results across roots. When two roots
 contain the same `id`, the earlier root wins.
 
