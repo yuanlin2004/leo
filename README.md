@@ -144,6 +144,82 @@ Each skill's directory is read-only mounted into the bash sandbox at its own abs
 
 A set of skills that have been tested for Leo can be found in the `skills-repo` folder. Copy the folder of a skill to `~/.leo/skills`. Some skills need setup, see the `README.md` file that comes with a skill. 
 
+## Reflection (lessons)
+
+Leo can study its own traces and turn user corrections, recovered mistakes, and discovered tool quirks into **lessons** — short behavioral rules it injects into future sessions so the same mistakes do not repeat.
+
+Reflection is opt-in per session boundary: type `/reflect` in the REPL to study the trace so far, or just exit cleanly with `/exit` (or `/quit`) to run reflection at session end. `/exit noref` skips it. Ctrl-C / EOF / process kill always skip — best-effort, not at-all-costs. Task mode (`--task`) does not run reflection in v1 (no human in the loop to review proposals).
+
+When reflection runs, Leo calls a separate LLM pass with a focused prompt that asks for write operations against the lessons database. You see each proposal — `CREATE category/title` or `UPDATE id` with the diff — and accept all (`y`), discard (`n`), or drop a single proposal (`skip-<n>`).
+
+### What a lesson looks like
+
+Lessons live as one markdown file per lesson under `~/.leo/lessons/<category>/<id>.md`:
+
+```markdown
+---
+id: sheets-need-export-format
+title: Google Sheets fetch needs export format
+category: gotcha
+trigger:
+  type: on_tool_call
+  keywords: [google sheets]
+scope: {}
+created: 2026-04-26
+updated: 2026-04-26
+---
+
+## Rule
+Use `/export?format=csv` when fetching a published Google Sheet — the rendered HTML hides empty rows.
+
+## Why
+Missed contact rows on mvmb.org because the embedded Sheet rendered as HTML, not data.
+
+## How to apply
+Whenever a fetch URL points at `docs.google.com/spreadsheets/...`.
+```
+
+Each lesson has two independent axes:
+
+- **category** — what kind of knowledge it is. One of `preference` (about the user), `fact` (about the world / codebase), `process` (workflow rule), `gotcha` (pitfall). Drives the on-disk folder.
+- **trigger** — when it fires. One of:
+  - `always` — folded into the system prompt at session start.
+  - `on_prompt` — keyword match against each new user prompt.
+  - `on_monologue` — keyword match against the agent's own text and tool results as they accrue.
+  - `on_tool_call` — match against a pending tool call before it dispatches; **triggers a replan** so the lesson actually changes the imminent action.
+
+Category and trigger are independent. A `process` rule can use any trigger; the reflector picks both based on what the trace teaches.
+
+### Scope
+
+Optional `scope` filters which sessions a lesson applies to:
+
+```yaml
+scope:
+  project: leo                                     # $LEO_PROJECT
+  model: [claude-opus-4-*, claude-sonnet-4-6]      # fnmatch globs allowed
+  skill: [git, github]
+```
+
+- Empty / omitted `scope` → global.
+- Each predicate value is a string or list of strings; matched as fnmatch globs.
+- AND across keys; OR within a value list.
+- `project` keys on `$LEO_PROJECT`, not `cwd` — set it via direnv or your project's `.env`.
+
+### REPL commands
+
+```
+/reflect                    study the recent trace and propose lesson updates
+/lessons                    list installed lessons grouped by category
+/lessons show <id>          print full lesson body
+/lessons forget <id>        delete a lesson
+/show-lessons-on            print which lessons fire mid-turn (default off)
+/exit, /quit                clean exit (runs reflection)
+/exit noref, /quit noref    clean exit, skip reflection
+```
+
+Lessons can be hand-authored or hand-edited at any time; Leo reloads them at the next session start. The reflector and hand-edits both run through the same schema validation and a threat-pattern scan (the lesson body lands in the system prompt — so it's attack surface).
+
 ## Tracing (LangSmith)
 
 Leo emits [LangSmith](https://smith.langchain.com/) traces when `LANGSMITH_TRACING=true`. Each user turn is a parent span with child spans for every LLM call (via `wrap_openai`) and every tool invocation, giving a tree like `turn → [llm_call, tool_call, llm_call, …]`.
