@@ -110,6 +110,17 @@ class LessonStore:
     def all(self) -> list[Lesson]:
         return list(self.lessons)
 
+    def reload(self) -> None:
+        """Re-read every root from disk. Idempotent; safe to call after
+        out-of-band edits.
+        """
+        self._reload()
+
+    @property
+    def found_count(self) -> int:
+        """Total lesson files seen on disk (loaded + rejected)."""
+        return len(self.lessons) + len(self.issues)
+
     def by_id(self, lesson_id: str) -> Lesson | None:
         for l in self.lessons:
             if l.id == lesson_id:
@@ -121,8 +132,21 @@ class LessonStore:
 
     def render_session_block(self, ctx: SessionContext) -> str:
         """Phase 1 injection text for the frozen system prompt."""
+        text, _ids = self.apply_session_start(ctx)
+        return text
+
+    def apply_session_start(
+        self, ctx: SessionContext,
+    ) -> tuple[str, list[str]]:
+        """Phase 1: pick `always`-trigger lessons in scope and render the block.
+
+        Returns (text, matched_ids). Callers seed `injected_ids` with the ids
+        so the lessons are counted as loaded for `/status` and skipped by
+        later phases (a no-op since `always` lessons aren't selected by
+        on_prompt / on_monologue / on_tool_call anyway).
+        """
         always = select_always(self.in_scope(ctx), ctx)
-        return render_frozen_block(always)
+        return render_frozen_block(always), [l.id for l in always]
 
     # -- Mid-loop injection helpers -----------------------------------------
     #

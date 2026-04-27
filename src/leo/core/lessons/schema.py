@@ -75,6 +75,11 @@ def _parse_text(text: str, source, *, file_path: Path | None) -> Lesson:
         meta = yaml.safe_load(text[3:end]) or {}
     except yaml.YAMLError as e:
         raise SchemaError(f"{source}: invalid YAML: {e}") from e
+    if not isinstance(meta, dict):
+        raise SchemaError(
+            f"{source}: frontmatter must be a YAML mapping, got "
+            f"{type(meta).__name__}"
+        )
     body = text[end + len("\n---"):].lstrip("\n")
 
     path = source  # for error messages — interchangeable with `source`

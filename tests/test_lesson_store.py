@@ -219,6 +219,57 @@ def test_write_trace_snapshot_yields_relative_path(tmp_path):
     assert (tmp_path / rel).exists()
 
 
+def test_apply_session_start_returns_text_and_ids(tmp_path):
+    write_lesson(tmp_path, "preference", "ap")  # always
+    write_lesson(
+        tmp_path,
+        "fact",
+        "fp",
+        trigger="trigger:\n  type: on_prompt\n  keywords: [foo]",
+    )
+    store = LessonStore([tmp_path])
+    text, ids = store.apply_session_start(
+        SessionContext(project=None, model="m", skills=frozenset())
+    )
+    # Only the always-trigger lesson contributes.
+    assert ids == ["ap"]
+    assert "Always apply" in text
+
+
+def test_apply_session_start_filters_by_scope(tmp_path):
+    write_lesson(
+        tmp_path,
+        "preference",
+        "leo-only",
+        scope="scope:\n  project: [leo]",
+    )
+    write_lesson(tmp_path, "preference", "global")
+    store = LessonStore([tmp_path])
+    _text, ids = store.apply_session_start(
+        SessionContext(project=None, model="m", skills=frozenset())
+    )
+    assert ids == ["global"]
+    _text, ids = store.apply_session_start(
+        SessionContext(project="leo", model="m", skills=frozenset())
+    )
+    assert set(ids) == {"global", "leo-only"}
+
+
+def test_apply_session_start_empty_when_no_always(tmp_path):
+    write_lesson(
+        tmp_path,
+        "fact",
+        "fp",
+        trigger="trigger:\n  type: on_prompt\n  keywords: [foo]",
+    )
+    store = LessonStore([tmp_path])
+    text, ids = store.apply_session_start(
+        SessionContext(project=None, model="m", skills=frozenset())
+    )
+    assert text == ""
+    assert ids == []
+
+
 def test_render_session_block_only_includes_always(tmp_path):
     write_lesson(tmp_path, "preference", "ap")  # always
     write_lesson(

@@ -4,7 +4,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 def _split_think(text: str | None) -> tuple[str, str]:
@@ -80,6 +82,7 @@ from leo.core.lessons.reflector import (
     UpdateOp,
     reflect,
 )
+from leo.core.lessons.schema import SchemaError, parse_lesson_text
 from leo.core.llm import LLM
 from leo.core.skill_core import discover_skills
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
@@ -124,6 +127,7 @@ COMMANDS_HELP = (
     "  /skills             list installed skills\n"
     "  /lessons            list installed lessons\n"
     "                      /lessons show <id>   — print full body\n"
+    "                      /lessons edit <id>   — open in $EDITOR\n"
     "                      /lessons forget <id> — delete a lesson\n"
     "  /reflect            study the trace and propose lesson updates\n"
     "  /save <file>        save current session to file\n"
@@ -182,6 +186,32 @@ def _handle_lessons_command(user_input: str, lessons: LessonStore) -> None:
             return
         print(lesson.path.read_text() if lesson.path else "(no path)")
         return
+    if sub == "edit" and len(parts) == 3:
+        lesson = lessons.by_id(parts[2])
+        if lesson is None:
+            print(f"(no lesson with id {parts[2]!r})")
+            return
+        if lesson.path is None:
+            print("(no on-disk path for this lesson)")
+            return
+        editor = os.environ.get("EDITOR") or "vi"
+        try:
+            subprocess.run([editor, str(lesson.path)], check=False)
+        except FileNotFoundError:
+            print(f"(editor {editor!r} not found)")
+            return
+        lessons.reload()
+        # Surface any new validation issue with this file.
+        new_issues = [i for i in lessons.issues if i.path == lesson.path]
+        if new_issues:
+            for issue in new_issues:
+                print(f"(edit warning: {issue.reason})")
+            return
+        if lessons.by_id(parts[2]) is None:
+            print(f"(edit removed lesson {parts[2]!r} from store)")
+        else:
+            print(f"(edited {parts[2]})")
+        return
     if sub == "forget" and len(parts) == 3:
         try:
             lessons.forget_lesson(parts[2])
@@ -190,7 +220,10 @@ def _handle_lessons_command(user_input: str, lessons: LessonStore) -> None:
             return
         print(f"(forgot {parts[2]})")
         return
-    print("usage: /lessons | /lessons show <id> | /lessons forget <id>")
+    print(
+        "usage: /lessons | /lessons show <id> | "
+        "/lessons edit <id> | /lessons forget <id>"
+    )
 
 
 def _parse_exit_command(user_input: str) -> tuple[bool, bool] | None:
@@ -238,6 +271,117 @@ def _format_proposal(idx: int, op) -> str:
     if isinstance(op, SkipOp):
         return f"[{idx}] SKIP — {op.reason}"
     return f"[{idx}] {op!r}"
+
+
+def _render_draft_lesson(d: dict) -> str:
+    """Build a markdown view of a lesson dict, NO validation. Used to seed
+    the editor with a possibly-invalid proposal."""
+    import yaml as _yaml
+    fm: dict = {}
+    for k in ("id", "title", "category", "trigger", "scope", "created", "updated"):
+        if k in d and d[k] is not None and d[k] != "":
+            fm[k] = d[k]
+    fm_yaml = _yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()
+    body = (
+        f"## Rule\n{(d.get('rule') or '').strip()}\n\n"
+        f"## Why\n{(d.get('why') or '').strip()}\n\n"
+        f"## How to apply\n{(d.get('how_to_apply') or '').strip()}\n"
+    )
+    return f"---\n{fm_yaml}\n---\n\n{body}"
+
+
+def _existing_lesson_to_dict(existing) -> dict:
+    """Snapshot of an existing Lesson as a dict suitable for editing."""
+    from leo.core.lessons import _scope_to_dict, _trigger_to_dict
+    return {
+        "id": existing.id,
+        "title": existing.title,
+        "category": existing.category,
+        "trigger": _trigger_to_dict(existing.trigger),
+        "scope": _scope_to_dict(existing.scope),
+        "created": existing.created,
+        "updated": existing.updated,
+        "rule": existing.rule,
+        "why": existing.why,
+        "how_to_apply": existing.how_to_apply,
+    }
+
+
+def _parsed_lesson_to_dict(lesson) -> dict:
+    """Dict shape `update_lesson` and `create_lesson` accept."""
+    from leo.core.lessons import _scope_to_dict, _trigger_to_dict
+    return {
+        "title": lesson.title,
+        "category": lesson.category,
+        "trigger": _trigger_to_dict(lesson.trigger),
+        "scope": _scope_to_dict(lesson.scope),
+        "rule": lesson.rule,
+        "why": lesson.why,
+        "how_to_apply": lesson.how_to_apply,
+    }
+
+
+def _edit_op_in_editor(op, lessons: LessonStore):
+    """Edit a CreateOp / UpdateOp in $EDITOR. Returns the (possibly
+    updated) op, or the original if the user aborts on a validation error.
+
+    SkipOps pass through unchanged.
+    """
+    if isinstance(op, SkipOp):
+        return op
+    if isinstance(op, CreateOp):
+        seed = dict(op.lesson)
+        seed.setdefault("id", "(generated at create time)")
+    elif isinstance(op, UpdateOp):
+        existing = lessons.by_id(op.id)
+        if existing is None:
+            print(f"  (cannot edit: no lesson with id {op.id!r})")
+            return op
+        seed = _existing_lesson_to_dict(existing)
+        seed.update(op.fields)
+    else:
+        return op
+
+    editor = os.environ.get("EDITOR") or "vi"
+    text = _render_draft_lesson(seed)
+    while True:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, prefix="leo-lesson-",
+        ) as tf:
+            tf.write(text)
+            tmp_path = tf.name
+        try:
+            subprocess.run([editor, tmp_path], check=False)
+            edited = Path(tmp_path).read_text()
+        except FileNotFoundError:
+            print(f"  (editor {editor!r} not found; keeping original)")
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return op
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        try:
+            parsed = parse_lesson_text(edited, source="<edit>")
+        except SchemaError as e:
+            print(f"  (edit failed validation: {e})")
+            choice = input("  retry / abort? ").strip().lower() or "abort"
+            if choice.startswith("a"):
+                print("  (kept original proposal)")
+                return op
+            text = edited  # carry the user's broken edit forward to fix
+            continue
+
+        if isinstance(op, CreateOp):
+            return CreateOp(lesson=_parsed_lesson_to_dict(parsed), raw=op.raw)
+        return UpdateOp(
+            id=op.id, fields=_parsed_lesson_to_dict(parsed), raw=op.raw,
+        )
 
 
 def _apply_op(op, lessons: LessonStore, source_trace: str | None) -> str:
@@ -304,7 +448,9 @@ def run_reflection(
         choice = "y"
     else:
         try:
-            choice = input("Apply all? [y/n/skip-<n>] ").strip().lower()
+            choice = input(
+                "Apply all? [y/n/edit/skip-<n>] "
+            ).strip().lower()
         except (KeyboardInterrupt, EOFError):
             choice = "n"
             print()
@@ -312,6 +458,18 @@ def run_reflection(
     if choice == "n" or choice == "":
         print("(reflect: discarded)")
         return len(messages)
+
+    if choice == "edit":
+        new_ops = []
+        for i, op in enumerate(result.ops, 1):
+            if isinstance(op, SkipOp):
+                new_ops.append(op)
+                continue
+            print(f"  [{i}] opening in $EDITOR...")
+            new_ops.append(_edit_op_in_editor(op, lessons))
+        result_ops = new_ops
+    else:
+        result_ops = result.ops
 
     skip_idx = None
     if choice.startswith("skip-"):
@@ -323,14 +481,14 @@ def run_reflection(
 
     snapshot_path: str | None = None
     creating_or_updating = any(
-        isinstance(op, (CreateOp, UpdateOp)) for op in result.ops
+        isinstance(op, (CreateOp, UpdateOp)) for op in result_ops
     )
     if creating_or_updating:
         snapshot_path = lessons.write_trace_snapshot(
-            trace, slug_hint=_first_title(result.ops),
+            trace, slug_hint=_first_title(result_ops),
         )
 
-    for i, op in enumerate(result.ops, 1):
+    for i, op in enumerate(result_ops, 1):
         if skip_idx is not None and i == skip_idx:
             print(f"  [{i}] skipped")
             continue
@@ -407,6 +565,7 @@ def run_turn(
     injected_ids: set[str] | None = None,
     on_replan=None,
     on_lesson_inject=None,
+    loaded_skills: set[str] | None = None,
 ) -> str:
     """Drive LLM + tool-call loop until no more tool calls. Returns final reply text.
 
@@ -493,6 +652,7 @@ def run_turn(
         ctx_obj = ToolContext(
             workspace=workspace, net_on=net_on,
             skills={s.name: s for s in skills},
+            loaded_skills=loaded_skills if loaded_skills is not None else set(),
         )
         for tc in msg.tool_calls:
             result = dispatch(tc.function.name, tc.function.arguments, ctx_obj)
@@ -520,6 +680,7 @@ def run_task_mode(
     workspace: Path,
     lessons,
     session_ctx,
+    phase1_ids: list[str] | None = None,
 ) -> int:
     prompt, cmds = _parse_task_file(Path(task_file).read_text())
     if not prompt:
@@ -542,7 +703,8 @@ def run_task_mode(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
     ]
-    injected_ids: set[str] = set()
+    injected_ids: set[str] = set(phase1_ids or ())
+    loaded_skills: set[str] = set()
     op_text, op_ids = lessons.apply_on_prompt(session_ctx, prompt, injected_ids)
     if op_ids:
         messages.append({"role": "user", "content": op_text})
@@ -600,6 +762,7 @@ def run_task_mode(
             on_reply=on_reply, on_think=on_think, on_tool=on_tool,
             lessons=lessons, session_ctx=session_ctx,
             injected_ids=injected_ids, on_replan=on_replan,
+            loaded_skills=loaded_skills,
         )
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
@@ -628,6 +791,8 @@ def run_task_mode(
         print(f"error:      {error}")
     print(f"turns:      {turns}")
     print(f"tool_calls: {len(tool_records)}")
+    print(f"skills:     {len(skills)} found, {len(loaded_skills)} loaded")
+    print(f"lessons:    {lessons.found_count} found, {len(injected_ids)} loaded")
     pct = llm.last_total_tokens / llm.max_tokens * 100 if llm.max_tokens else 0.0
     print(f"context:    {llm.last_total_tokens:,} / {llm.max_tokens:,} tokens ({pct:.1f}%)")
     return 1 if error else 0
@@ -682,7 +847,7 @@ def main() -> None:
         model=llm.model,
         skills=frozenset(s.name for s in skills),
     )
-    lessons_block = lessons.render_session_block(session_ctx)
+    lessons_block, phase1_ids = lessons.apply_session_start(session_ctx)
     if lessons_block:
         system_prompt = f"{system_prompt}\n\n{lessons_block}"
 
@@ -690,7 +855,7 @@ def main() -> None:
         sys.exit(
             run_task_mode(
                 args.task, system_prompt, skills, llm, workspace,
-                lessons, session_ctx,
+                lessons, session_ctx, phase1_ids,
             )
         )
 
@@ -699,7 +864,8 @@ def main() -> None:
         "show_tool_call": False, "show_think": False, "show_lessons": False,
     }
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
-    injected_ids: set[str] = set()
+    injected_ids: set[str] = set(phase1_ids)
+    loaded_skills: set[str] = set()
     last_reflection_idx = 1  # everything after the system message
 
     def print_status() -> None:
@@ -711,8 +877,11 @@ def main() -> None:
         print(f"show-think:    {'on' if state['show_think'] else 'off'}")
         print(f"show-lessons:  {'on' if state['show_lessons'] else 'off'}")
         print(f"workspace:     {workspace}")
-        print(f"skills:        {len(skills)} loaded")
-        print(f"lessons:       {len(lessons.lessons)} loaded")
+        print(f"skills:        {len(skills)} found, {len(loaded_skills)} loaded")
+        print(
+            f"lessons:       {lessons.found_count} found, "
+            f"{len(injected_ids)} loaded"
+        )
         print(f"turns:         {sum(1 for m in messages if m['role'] == 'user')}")
         pct = llm.last_total_tokens / llm.max_tokens * 100 if llm.max_tokens else 0.0
         print(f"context:       {llm.last_total_tokens:,} / {llm.max_tokens:,} tokens ({pct:.1f}%)")
@@ -751,7 +920,8 @@ def main() -> None:
             continue
         if user_input == "/reset":
             messages = [{"role": "system", "content": system_prompt}]
-            injected_ids = set()
+            injected_ids = set(phase1_ids)
+            loaded_skills = set()
             last_reflection_idx = 1
             print("(history cleared)")
             continue
@@ -876,6 +1046,7 @@ def main() -> None:
                 lessons=lessons, session_ctx=session_ctx,
                 injected_ids=injected_ids, on_replan=on_replan,
                 on_lesson_inject=on_lesson_inject,
+                loaded_skills=loaded_skills,
             )
             rt.end(outputs={"reply": reply_text})
 

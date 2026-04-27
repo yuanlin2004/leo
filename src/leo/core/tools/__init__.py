@@ -23,6 +23,7 @@ class ToolContext:
     workspace: Path
     net_on: bool = True
     skills: dict[str, Skill] = field(default_factory=dict)
+    loaded_skills: set[str] = field(default_factory=set)
 
 
 from . import bash as _bash

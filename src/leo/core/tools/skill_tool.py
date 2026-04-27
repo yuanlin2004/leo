@@ -12,6 +12,7 @@ def load_skill(ctx, name: str) -> str:
         body = read_skill_body(skill.path)
     except OSError as e:
         return f"error: failed to read skill {name!r}: {e}"
+    ctx.loaded_skills.add(name)
     skill_dir = skill.path.parent.resolve()
     header = (
         f"Skill directory: {skill_dir}\n"
