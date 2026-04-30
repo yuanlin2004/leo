@@ -131,7 +131,7 @@ appear in the dispatch logic.
 | ---------------- | ---------------------------------------------- | ------------------------------------ | -------- |
 | `always`         | Once at session start                          | Frozen system-prompt block           | No       |
 | `on_prompt`      | Turn start, against the new user message       | Suffix-appended system-role message  | No       |
-| `on_monologue`   | After each LLM response and each tool result   | Suffix-appended system-role message  | No       |
+| `on_monologue`   | At `</think>` boundary (thinking text only) and after each tool result | Suffix-appended user-role `[System note: ...]` | **Yes** (boundary only) |
 | `on_tool_call`   | Pre-dispatch, against pending tool call + args | Suffix-appended system-role message  | **Yes**  |
 
 Trigger semantics:
@@ -144,9 +144,14 @@ Trigger semantics:
   system-role message in v1. (Folding into the frozen system prompt
   on the first user prompt is a future optimization — see Open
   questions.)
-- `on_monologue` — keyword match against assistant content
-  (including thinking), tool call args, and tool results as they
-  accrue. Suffix-appended.
+- `on_monologue` — keyword match against the assistant's **thinking
+  text only** (the content inside `<think>...</think>`), evaluated at
+  the moment the model closes the think block, and against each tool
+  result as it accrues. The final answer text is *not* a trigger:
+  by the time it is fully observed it has already streamed to the
+  user. A match at the `</think>` boundary suppresses live emission
+  of the (not-yet-streamed) answer and drives a replan with the
+  lesson injected, sharing the `on_tool_call` replan budget.
 - `on_tool_call` — match by `tool` name (if specified) and/or
   keyword in args (if specified). At least one of `tool` or
   `keywords` must be present. Triggers a replan (see below).
@@ -371,20 +376,26 @@ The replan subloop:
    tool-call boundary**; after that, dispatch whatever was last
    emitted and log a warning.
 
-#### 3b. `on_monologue` (post-LLM-response, post-tool-result)
+#### 3b. `on_monologue` (think-boundary and post-tool-result)
 
-Run at two points within the loop body, in this order:
+Run at two points within the loop body:
 
-- **Right after the LLM responds** (before any tool dispatch or
-  replan). Match against the assistant content, including thinking.
+- **At the `</think>` boundary**, mid-stream, against the thinking
+  text only. If a match fires and the replan budget allows, live
+  emission of the answer is suppressed, the assistant draft is
+  popped, the lesson is injected, and the LLM is re-called — same
+  mechanic as `on_tool_call` replan and sharing the same per-turn
+  budget. If the budget is exhausted, the answer is allowed to
+  stream and the lesson is registered for the next turn (no replan).
 - **Right after each tool result lands.** Match against the tool
-  call name, serialized args, and result text.
+  call name, serialized args, and result text. No replan in this
+  path; the lesson is appended in place.
 
-In both cases, matched lessons are appended as a system-role message
-in place — the next LLM call (the next loop iteration, or the replan
-itself) will see them naturally. **No replan from `on_monologue`** —
-we never replan based on the agent's own monologue, only on a
-pending tool call.
+The final answer text is intentionally *not* a trigger: by the time
+the assistant turn is fully observed, the answer has streamed to the
+user, so a match would arrive too late to influence what was said.
+The boundary check exists precisely to catch the lesson before that
+point.
 
 ### Cache and dedup
 
@@ -593,18 +604,24 @@ src/leo/core/
 When `None` (e.g. in task mode for v1), all mid-loop hooks are
 no-ops. When set, the loop body becomes:
 
-1. `llm.chat(...)` → assistant message.
-2. Run `on_monologue` retrieval against the assistant content
-   (including thinking); append matches as a system-role message.
+1. `llm.chat(...)` streams. When the stream crosses `</think>`, run
+   `on_monologue` retrieval against the accumulated thinking text.
+   If any lesson matches and the replan budget is not yet exhausted,
+   suppress live emission of the answer for the rest of this stream.
+2. Once `llm.chat(...)` returns, the assistant message is appended.
+   - If a thinking-boundary `on_monologue` lesson fired and the
+     replan budget allows: pop the draft, append the lesson note,
+     re-call `llm.chat(...)`, repeat from step 1.
+   - If the budget is exhausted, keep the draft and register the
+     lesson note for the next turn.
 3. If the assistant message has tool calls and any `on_tool_call`
-   lessons match the pending calls, run the **replan** subloop:
-   pop the assistant message, append the lesson system-note, re-call
-   `llm.chat(...)`, repeat until no new `on_tool_call` lessons match
-   or the replan cap (2) is hit.
+   lessons match, run the same replan subloop on `on_tool_call`.
+   `on_monologue` and `on_tool_call` share the per-turn replan cap
+   of 2.
 4. Dispatch the (possibly revised) tool calls.
 5. After each tool result, run `on_monologue` retrieval against the
-   tool name, args, and result; append matches as a system-role
-   message.
+   tool name, args, and result; append matches as a user-role
+   `[System note: ...]` message.
 6. Loop.
 
 The replan subloop is a new internal helper, not exposed outside

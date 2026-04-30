@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from prompt_toolkit import PromptSession
+
 def _split_think(text: str | None) -> tuple[str, str]:
     """Return (think, reply). Handles paired <think>...</think> and orphan </think>."""
     if not text:
@@ -22,13 +24,21 @@ def _split_think(text: str | None) -> tuple[str, str]:
 
 
 class _ThinkStripper:
-    """Streams text with <think>...</think> suppressed (or rerouted) across chunk boundaries."""
+    """Streams text with <think>...</think> suppressed (or rerouted) across chunk boundaries.
 
-    def __init__(self, on_reply, on_think=None, start_in_think=False):
+    `on_think_end` (optional): called once per `</think>` close. If it returns
+    truthy, subsequent reply bytes are dropped instead of being forwarded to
+    `on_reply` — used to abort live emission when a lesson fires on the
+    thinking text and we plan to replan.
+    """
+
+    def __init__(self, on_reply, on_think=None, on_think_end=None, start_in_think=False):
         self.on_reply = on_reply
         self.on_think = on_think
+        self.on_think_end = on_think_end
         self.in_think = start_in_think
         self.buf = ""
+        self.suppress_reply = False
 
     @staticmethod
     def _partial_tail(text: str, tag: str) -> int:
@@ -36,6 +46,10 @@ class _ThinkStripper:
             if tag.startswith(text[-n:]):
                 return n
         return 0
+
+    def _emit_reply(self, s: str) -> None:
+        if s and not self.suppress_reply:
+            self.on_reply(s)
 
     def feed(self, chunk: str) -> None:
         text = self.buf + chunk
@@ -53,22 +67,27 @@ class _ThinkStripper:
                     self.on_think(text[:i])
                 text = text[i + len("</think>"):]
                 self.in_think = False
+                if self.on_think_end is not None and not self.suppress_reply:
+                    if self.on_think_end():
+                        self.suppress_reply = True
             else:
                 i = text.find("<think>")
                 if i == -1:
                     keep = self._partial_tail(text, "<think>")
                     emit, self.buf = (text[:-keep], text[-keep:]) if keep else (text, "")
-                    if emit:
-                        self.on_reply(emit)
+                    self._emit_reply(emit)
                     return
                 if i > 0:
-                    self.on_reply(text[:i])
+                    self._emit_reply(text[:i])
                 text = text[i + len("<think>"):]
                 self.in_think = True
 
     def flush(self) -> None:
         if self.buf:
-            (self.on_think if self.in_think and self.on_think else self.on_reply)(self.buf)
+            if self.in_think and self.on_think:
+                self.on_think(self.buf)
+            elif not self.in_think:
+                self._emit_reply(self.buf)
             self.buf = ""
 
 from dotenv import load_dotenv
@@ -572,21 +591,48 @@ def run_turn(
     When `lessons` and `session_ctx` are provided, applies mid-loop hooks:
     - `on_tool_call` matches drive a replan (LLM re-prompted with the matched
       lesson, original draft popped from history).
-    - `on_monologue` matches inject a system-role message after the LLM
-      response finalizes and after each tool result.
+    - `on_monologue` matches against the thinking text at the `</think>`
+      boundary; on a hit, live reply emission is suppressed and the LLM is
+      replanned with the lesson injected. Also runs against each tool result.
     """
     if injected_ids is None:
         injected_ids = set()
 
     reply_text = ""
     while True:
-        # Inner replan loop: keep re-calling the LLM until either no
-        # on_tool_call lessons fire, the cap is hit, or the response has no
-        # tool calls.
+        # Inner replan loop: keep re-calling the LLM until no replan trigger
+        # fires (on_monologue at think-boundary or on_tool_call), the cap is
+        # hit, or the response has no tool calls.
         replan_count = 0
         while True:
+            think_buf: list[str] = []
+            mono_match: dict = {"text": "", "ids": []}
+
+            def _accum_think(s: str) -> None:
+                think_buf.append(s)
+                if on_think is not None:
+                    on_think(s)
+
+            def _check_think_end() -> bool:
+                if lessons is None or session_ctx is None:
+                    return False
+                text, ids = lessons.apply_on_monologue(
+                    session_ctx, "".join(think_buf), injected_ids,
+                )
+                if not ids:
+                    return False
+                mono_match["text"] = text
+                mono_match["ids"] = ids
+                # Suppress live reply only if we can actually replan; if the
+                # budget is exhausted, let the reply stream and just register
+                # the lesson into history below.
+                return replan_count < REPLAN_CAP
+
             stripper = _ThinkStripper(
-                on_reply=on_reply, on_think=on_think, start_in_think=think_on,
+                on_reply=on_reply,
+                on_think=_accum_think,
+                on_think_end=_check_think_end,
+                start_in_think=think_on,
             )
             msg = llm.chat(
                 messages,
@@ -612,8 +658,29 @@ def run_turn(
                 ]
             messages.append(entry)
 
-            # Decide whether to replan. Only relevant if we have tool calls
-            # and a lesson store.
+            # on_monologue replan: a lesson fired against the thinking text;
+            # the live reply was suppressed by the stripper. Pop the draft,
+            # inject the lesson, and re-call the LLM.
+            if mono_match["ids"] and replan_count < REPLAN_CAP:
+                messages.pop()
+                _inject_lesson_message(
+                    messages, mono_match["text"], mono_match["ids"], injected_ids,
+                )
+                if on_replan is not None:
+                    on_replan(mono_match["ids"])
+                replan_count += 1
+                continue
+            # Cap hit: reply was allowed to stream; still register the lesson
+            # so it influences the next turn.
+            if mono_match["ids"]:
+                _inject_lesson_message(
+                    messages, mono_match["text"], mono_match["ids"], injected_ids,
+                )
+                if on_lesson_inject is not None:
+                    on_lesson_inject("on_monologue", mono_match["ids"])
+
+            # on_tool_call replan: only relevant if we have tool calls and a
+            # lesson store.
             if (
                 msg.tool_calls
                 and lessons is not None
@@ -626,23 +693,12 @@ def run_turn(
                     injected_ids,
                 )
                 if ids:
-                    # Pop the just-emitted draft, inject the lesson note,
-                    # and loop back to re-call the LLM.
                     messages.pop()
                     _inject_lesson_message(messages, text, ids, injected_ids)
                     if on_replan is not None:
                         on_replan(ids)
                     replan_count += 1
                     continue
-            # No replan needed (or cap hit). Run on_monologue against the
-            # final assistant content, then exit the inner loop.
-            if lessons is not None and session_ctx is not None:
-                text, ids = lessons.apply_on_monologue(
-                    session_ctx, msg.content or "", injected_ids,
-                )
-                _inject_lesson_message(messages, text, ids, injected_ids)
-                if ids and on_lesson_inject is not None:
-                    on_lesson_inject("on_monologue", ids)
             break
 
         if not msg.tool_calls:
@@ -890,9 +946,11 @@ def main() -> None:
     print_status()
     print("type /help to list commands")
 
+    prompt_session: PromptSession[str] = PromptSession()
+
     while True:
         try:
-            user_input = input("\nyou> ").strip()
+            user_input = prompt_session.prompt("\nyou> ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             break

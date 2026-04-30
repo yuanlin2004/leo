@@ -88,7 +88,9 @@ def test_no_lessons_path_unchanged(tmp_path):
     assert msgs[-1]["role"] == "assistant"
 
 
-def test_on_monologue_injects_after_final_reply(tmp_path):
+def test_on_monologue_replans_on_thinking_match(tmp_path):
+    """on_monologue lesson keyed to a word in the thinking text drives a
+    replan: original draft popped, lesson injected, LLM re-called."""
     write_lesson(
         tmp_path,
         "process",
@@ -99,20 +101,51 @@ def test_on_monologue_injects_after_final_reply(tmp_path):
     ctx = SessionContext(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "summarize"}]
-    llm = FakeLLM([_fake_response(content="Here is the report.")])
+    llm = FakeLLM([
+        _fake_response(content="<think>writing the report</think>draft"),
+        _fake_response(content="revised"),
+    ])
     injected: set[str] = set()
     reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
                    injected_ids=injected)
-    assert reply == "Here is the report."
-    # Last message is the on_monologue note. Role is `user` (mid-conv
-    # system messages would be rejected by Qwen3/vLLM); the [System note:]
-    # prefix in the rendered text marks it as out-of-band guidance.
-    assert msgs[-1]["role"] == "user"
-    assert "Additional lessons now in scope" in msgs[-1]["content"]
+    assert reply == "revised"
+    assert llm.calls == 2
+    # Original draft popped; only the revised assistant message remains.
+    assistants = [m for m in msgs if m["role"] == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0]["content"] == "revised"
+    # Exactly one lesson note (role=user, [System note:]-prefixed).
+    notes = [m for m in msgs if m["role"] == "user"
+             and "Additional lessons now in scope" in m["content"]]
+    assert len(notes) == 1
     assert "tests-after-edit" in injected
 
 
+def test_on_monologue_does_not_fire_on_answer_text(tmp_path):
+    """Keyword present only in the final answer (no <think> block) must NOT
+    trigger on_monologue — by design, the answer is not a lesson trigger."""
+    write_lesson(
+        tmp_path,
+        "process",
+        "answer-only",
+        trigger="trigger:\n  type: on_monologue\n  keywords: [report]",
+    )
+    store = LessonStore([tmp_path])
+    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    msgs = [{"role": "user", "content": "summarize"}]
+    llm = FakeLLM([_fake_response(content="Here is the report.")])
+    injected: set[str] = set()
+    _drive(msgs, llm, lessons=store, session_ctx=ctx, injected_ids=injected)
+    assert llm.calls == 1
+    assert injected == set()
+    notes = [m for m in msgs if m["role"] == "user"
+             and "Additional lessons now in scope" in m.get("content", "")]
+    assert notes == []
+
+
 def test_on_monologue_dedups_across_calls(tmp_path):
+    """Same lesson would match thinking text on two consecutive LLM calls;
+    second match is excluded via injected_ids."""
     write_lesson(
         tmp_path,
         "process",
@@ -122,12 +155,12 @@ def test_on_monologue_dedups_across_calls(tmp_path):
     store = LessonStore([tmp_path])
     ctx = SessionContext(project=None, model="m", skills=frozenset())
     msgs = [{"role": "user", "content": "go"}]
-    llm = FakeLLM([_fake_response(content="report once. report twice.")])
+    llm = FakeLLM([
+        _fake_response(content="<think>report once</think>draft"),
+        _fake_response(content="<think>report twice</think>final"),
+    ])
     injected: set[str] = set()
     _drive(msgs, llm, lessons=store, session_ctx=ctx, injected_ids=injected)
-    # Injection appears once even though "report" appears twice in the text
-    # and the lesson keyword would match — substring match counts presence,
-    # not occurrences, and the lesson is selected only once anyway.
     monologue_msgs = [m for m in msgs if m["role"] == "user"
                       and "Additional lessons now in scope" in m["content"]]
     assert len(monologue_msgs) == 1
@@ -258,7 +291,9 @@ def test_dedup_prevents_repeated_replan(tmp_path):
     assert llm.calls == 3
 
 
-def test_on_lesson_inject_called_for_on_monologue(tmp_path):
+def test_on_replan_called_for_thinking_monologue_match(tmp_path):
+    """When a lesson fires on thinking text and budget allows, the replan
+    path (on_replan callback) is invoked — not on_lesson_inject."""
     write_lesson(
         tmp_path,
         "process",
@@ -269,23 +304,17 @@ def test_on_lesson_inject_called_for_on_monologue(tmp_path):
     ctx = SessionContext(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "summarize"}]
-    llm = FakeLLM([_fake_response(content="Here is the report.")])
+    llm = FakeLLM([
+        _fake_response(content="<think>writing the report</think>draft"),
+        _fake_response(content="revised"),
+    ])
     injected: set[str] = set()
+    replan_calls: list[list[str]] = []
     inject_calls: list[tuple[str, list[str]]] = []
-    _drive(
-        msgs, llm, lessons=store, session_ctx=ctx, injected_ids=injected,
-    )
-    # Without on_lesson_inject the path still works (ids list still tracked).
-    assert "watch-report" in injected
-
-    # Now repeat with the callback wired up.
-    msgs2 = [{"role": "user", "content": "summarize"}]
-    llm2 = FakeLLM([_fake_response(content="Here is the report.")])
-    injected2: set[str] = set()
     from leo.cli.leo import run_turn
     run_turn(
-        msgs2,
-        llm=llm2,
+        msgs,
+        llm=llm,
         skills=[],
         workspace=Path("/tmp"),
         think_on=False,
@@ -295,10 +324,13 @@ def test_on_lesson_inject_called_for_on_monologue(tmp_path):
         on_tool=lambda n, a, r: None,
         lessons=store,
         session_ctx=ctx,
-        injected_ids=injected2,
+        injected_ids=injected,
+        on_replan=lambda ids: replan_calls.append(list(ids)),
         on_lesson_inject=lambda phase, ids: inject_calls.append((phase, list(ids))),
     )
-    assert inject_calls == [("on_monologue", ["watch-report"])]
+    assert replan_calls == [["watch-report"]]
+    assert inject_calls == []  # cap-hit path not taken
+    assert "watch-report" in injected
 
 
 def test_on_monologue_injected_after_tool_result(tmp_path):
