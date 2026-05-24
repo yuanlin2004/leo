@@ -93,7 +93,7 @@ class _ThinkStripper:
 from dotenv import load_dotenv
 
 from leo.cli.banner import render_leo_banner
-from leo.core.lessons import LessonStore, SessionContext, WriteError
+from leo.core.lessons import LessonStore, LessonScope, WriteError
 from leo.core.lessons.reflector import (
     CreateOp,
     ReflectorError,
@@ -103,6 +103,17 @@ from leo.core.lessons.reflector import (
 )
 from leo.core.lessons.schema import SchemaError, parse_lesson_text
 from leo.core.llm import LLM
+from leo.core.session import (
+    Session,
+    append_messages,
+    count_messages,
+    delete_session,
+    derive_title_from_messages,
+    find_last,
+    list_sessions,
+    load_session,
+    new_session,
+)
 from leo.core.skill_core import discover_skills
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
 
@@ -121,6 +132,150 @@ except ImportError:
 DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
 SKILLS_ROOT = Path.home() / ".leo" / "skills"
 LESSONS_ROOT = Path.home() / ".leo" / "lessons"
+
+WORKSPACE_MARKER = ".leo"
+WORKSPACE_SUBDIRS = ("skills", "lessons", "memory", "sessions")
+
+
+def _workspace_skills_root(workspace: Path) -> Path:
+    return workspace / WORKSPACE_MARKER / "skills"
+
+
+def _workspace_lessons_root(workspace: Path) -> Path:
+    return workspace / WORKSPACE_MARKER / "lessons"
+
+
+def _cmd_init(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="leo init",
+        description="Create a .leo/ skeleton at PATH (default: current directory).",
+    )
+    parser.add_argument(
+        "path", nargs="?", default=".",
+        help="directory to initialize as a Leo workspace (default: cwd)",
+    )
+    args = parser.parse_args(argv)
+    target = Path(args.path).resolve()
+    if not target.is_dir():
+        print(f"leo init: {target} is not a directory", file=sys.stderr)
+        return 1
+    leo_dir = target / WORKSPACE_MARKER
+    created: list[Path] = []
+    for sub in (leo_dir, *(leo_dir / s for s in WORKSPACE_SUBDIRS)):
+        if not sub.exists():
+            sub.mkdir(parents=True)
+            created.append(sub)
+    if created:
+        print(f"initialized workspace at {target}")
+        for p in created:
+            print(f"  created {p.relative_to(target)}")
+    else:
+        print(f"workspace at {target} already initialized")
+    return 0
+
+
+def _resolve_workspace(arg: str | None) -> Path:
+    """Return the absolute workspace path or exit with a hint."""
+    workspace = Path(arg).resolve() if arg else Path.cwd().resolve()
+    if not workspace.is_dir():
+        print(f"leo: workspace path {workspace} is not a directory", file=sys.stderr)
+        sys.exit(2)
+    if not (workspace / WORKSPACE_MARKER).is_dir():
+        print(
+            f"leo: no workspace found at {workspace}\n"
+            f"run `leo init [path]` to create one",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return workspace
+
+
+def _fmt_ts(ts: str) -> str:
+    """Display ISO timestamp with '-' between date and time instead of 'T'."""
+    return ts.replace("T", "-", 1) if ts else ts
+
+
+def _choose_session_interactively(workspace: Path) -> str | None:
+    """Prompt the user to start a new session or resume an existing one.
+
+    Returns the chosen session id to resume, or None to start a new
+    session. Exits the process on 'q' / EOF / Ctrl-C.
+    """
+    sessions = list_sessions(workspace)
+    if not sessions:
+        return None
+    print(f"\nSessions in {workspace}:")
+    print("  [n] start a new session  (default)")
+    for i, s in enumerate(sessions, 1):
+        print(f"  [{i}] {s.id}  {_fmt_ts(s.last_active)}  {s.title}")
+    print("  [q] exit")
+    while True:
+        try:
+            raw = input("choose> ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(0)
+        if raw in ("", "n"):
+            return None
+        if raw == "q":
+            sys.exit(0)
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(sessions):
+                return sessions[idx - 1].id
+        print(f"invalid choice: {raw!r}")
+
+
+def _cmd_session(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="leo session")
+    parser.add_argument(
+        "--workspace", metavar="PATH",
+        help="workspace directory (default: cwd)",
+    )
+    sub = parser.add_subparsers(dest="op", required=True)
+    sub.add_parser("list", help="list sessions in the workspace")
+    p_show = sub.add_parser("show", help="show meta + message count for a session")
+    p_show.add_argument("id")
+    p_rm = sub.add_parser("rm", help="delete a session")
+    p_rm.add_argument("id")
+    args = parser.parse_args(argv)
+    workspace = _resolve_workspace(args.workspace)
+
+    if args.op == "list":
+        sessions = list_sessions(workspace)
+        if not sessions:
+            print("(no sessions)")
+            return 0
+        for s in sessions:
+            print(f"  {s.id}  {_fmt_ts(s.last_active)}  {s.title}")
+        return 0
+
+    if args.op == "show":
+        try:
+            session, messages = load_session(workspace, args.id)
+        except FileNotFoundError as e:
+            print(f"leo session: {e}", file=sys.stderr)
+            return 1
+        print(f"id:             {session.id}")
+        print(f"title:          {session.title}")
+        print(f"model:          {session.model}")
+        print(f"started_at:     {_fmt_ts(session.started_at)}")
+        print(f"last_active:    {_fmt_ts(session.last_active)}")
+        print(f"reflection_idx: {session.reflection_idx}")
+        print(f"messages:       {len(messages)}")
+        print(f"path:           {session.dir}")
+        return 0
+
+    if args.op == "rm":
+        try:
+            delete_session(workspace, args.id)
+        except FileNotFoundError as e:
+            print(f"leo session: {e}", file=sys.stderr)
+            return 1
+        print(f"deleted session {args.id}")
+        return 0
+
+    return 1
 
 COMMANDS_HELP = (
     "commands:\n"
@@ -430,7 +585,7 @@ def run_reflection(
     *,
     llm: LLM,
     lessons: LessonStore,
-    session_ctx: SessionContext,
+    lesson_scope: LessonScope,
     last_reflection_idx: int,
     auto: bool = False,
 ) -> int:
@@ -445,7 +600,7 @@ def run_reflection(
 
     print("(reflecting on the recent trace...)")
     try:
-        result = reflect(llm, trace, lessons.in_scope(session_ctx))
+        result = reflect(llm, trace, lessons.in_scope(lesson_scope))
     except ReflectorError as e:
         print(f"(reflect: parser error — {e})")
         return last_reflection_idx
@@ -580,7 +735,7 @@ def run_turn(
     on_think,
     on_tool,
     lessons=None,
-    session_ctx=None,
+    lesson_scope=None,
     injected_ids: set[str] | None = None,
     on_replan=None,
     on_lesson_inject=None,
@@ -588,7 +743,7 @@ def run_turn(
 ) -> str:
     """Drive LLM + tool-call loop until no more tool calls. Returns final reply text.
 
-    When `lessons` and `session_ctx` are provided, applies mid-loop hooks:
+    When `lessons` and `lesson_scope` are provided, applies mid-loop hooks:
     - `on_tool_call` matches drive a replan (LLM re-prompted with the matched
       lesson, original draft popped from history).
     - `on_monologue` matches against the thinking text at the `</think>`
@@ -614,10 +769,10 @@ def run_turn(
                     on_think(s)
 
             def _check_think_end() -> bool:
-                if lessons is None or session_ctx is None:
+                if lessons is None or lesson_scope is None:
                     return False
                 text, ids = lessons.apply_on_monologue(
-                    session_ctx, "".join(think_buf), injected_ids,
+                    lesson_scope, "".join(think_buf), injected_ids,
                 )
                 if not ids:
                     return False
@@ -684,11 +839,11 @@ def run_turn(
             if (
                 msg.tool_calls
                 and lessons is not None
-                and session_ctx is not None
+                and lesson_scope is not None
                 and replan_count < REPLAN_CAP
             ):
                 text, ids = lessons.apply_on_tool_call(
-                    session_ctx,
+                    lesson_scope,
                     _tool_call_views(msg.tool_calls),
                     injected_ids,
                 )
@@ -716,12 +871,12 @@ def run_turn(
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": result}
             )
-            if lessons is not None and session_ctx is not None:
+            if lessons is not None and lesson_scope is not None:
                 blob = (
                     f"{tc.function.name} {tc.function.arguments or ''} {result}"
                 )
                 text, ids = lessons.apply_on_monologue(
-                    session_ctx, blob, injected_ids,
+                    lesson_scope, blob, injected_ids,
                 )
                 _inject_lesson_message(messages, text, ids, injected_ids)
                 if ids and on_lesson_inject is not None:
@@ -735,7 +890,7 @@ def run_task_mode(
     llm: LLM,
     workspace: Path,
     lessons,
-    session_ctx,
+    lesson_scope,
     phase1_ids: list[str] | None = None,
 ) -> int:
     prompt, cmds = _parse_task_file(Path(task_file).read_text())
@@ -761,7 +916,7 @@ def run_task_mode(
     ]
     injected_ids: set[str] = set(phase1_ids or ())
     loaded_skills: set[str] = set()
-    op_text, op_ids = lessons.apply_on_prompt(session_ctx, prompt, injected_ids)
+    op_text, op_ids = lessons.apply_on_prompt(lesson_scope, prompt, injected_ids)
     if op_ids:
         messages.append({"role": "user", "content": op_text})
         injected_ids.update(op_ids)
@@ -816,7 +971,7 @@ def run_task_mode(
             messages, llm=llm, skills=skills, workspace=workspace,
             think_on=state["think_on"], net_on=state["net_on"],
             on_reply=on_reply, on_think=on_think, on_tool=on_tool,
-            lessons=lessons, session_ctx=session_ctx,
+            lessons=lessons, lesson_scope=lesson_scope,
             injected_ids=injected_ids, on_replan=on_replan,
             loaded_skills=loaded_skills,
         )
@@ -858,7 +1013,30 @@ def main() -> None:
     load_dotenv()
     load_dotenv(Path.home() / ".env")
 
-    parser = argparse.ArgumentParser(prog="leo", allow_abbrev=False)
+    if len(sys.argv) >= 2 and sys.argv[1] == "init":
+        sys.exit(_cmd_init(sys.argv[2:]))
+    if len(sys.argv) >= 2 and sys.argv[1] == "session":
+        sys.exit(_cmd_session(sys.argv[2:]))
+
+    parser = argparse.ArgumentParser(
+        prog="leo",
+        allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Leo — an LLM-based agent. Runs an interactive chat session "
+            "by default; use --task for one-shot non-interactive mode."
+        ),
+        epilog=(
+            "subcommands:\n"
+            "  leo init [path]         create a .leo/ skeleton (workspace) at path (default: cwd)\n"
+            "  leo session list        list sessions in the current workspace\n"
+            "  leo session show <id>   print a session's meta + message count\n"
+            "  leo session rm <id>     delete a session\n"
+            "\n"
+            "Each subcommand accepts --workspace PATH and -h for its own help.\n"
+            "Type /help inside the REPL for in-session commands."
+        ),
+    )
     parser.add_argument(
         "--sysprompt",
         metavar="FILE",
@@ -869,14 +1047,32 @@ def main() -> None:
         metavar="FILE",
         help="run non-interactively using FILE's contents as the initial user prompt",
     )
+    parser.add_argument(
+        "--workspace",
+        metavar="PATH",
+        help="workspace directory (must contain a .leo/ folder; default: cwd)",
+    )
+    parser.add_argument(
+        "--session",
+        metavar="ID",
+        help="resume an existing session by id (or 'last' for the most recent)",
+    )
     args = parser.parse_args()
+
+    workspace = _resolve_workspace(args.workspace)
 
     if args.sysprompt:
         system_prompt = Path(args.sysprompt).read_text()
     else:
         system_prompt = DEFAULT_SYSTEM_PROMPT
 
-    skills = discover_skills(SKILLS_ROOT)
+    global_skills = discover_skills(SKILLS_ROOT)
+    workspace_skills = discover_skills(_workspace_skills_root(workspace))
+    # Workspace wins on name collision.
+    _by_name = {s.name: s for s in global_skills}
+    for s in workspace_skills:
+        _by_name[s.name] = s
+    skills = list(_by_name.values())
     if skills:
         lines = "\n".join(f"- {s.name}: {s.description}" for s in skills)
         system_prompt = (
@@ -893,36 +1089,76 @@ def main() -> None:
         )
 
     llm = LLM()
-    workspace = Path.cwd().resolve()
 
-    lessons = LessonStore([LESSONS_ROOT])
+    # Workspace lessons root is first so reflector writes land there.
+    lessons = LessonStore([_workspace_lessons_root(workspace), LESSONS_ROOT])
     for issue in lessons.issues:
         print(f"(lesson {issue.path.name}: {issue.reason})", file=sys.stderr)
-    session_ctx = SessionContext(
+    lesson_scope = LessonScope(
         project=os.environ.get("LEO_PROJECT"),
         model=llm.model,
         skills=frozenset(s.name for s in skills),
     )
-    lessons_block, phase1_ids = lessons.apply_session_start(session_ctx)
+    lessons_block, phase1_ids = lessons.apply_session_start(lesson_scope)
     if lessons_block:
         system_prompt = f"{system_prompt}\n\n{lessons_block}"
 
     if args.task:
+        if args.session:
+            print(
+                "leo: --task does not support --session in v1 "
+                "(one-shots are ephemeral)", file=sys.stderr,
+            )
+            sys.exit(2)
         sys.exit(
             run_task_mode(
                 args.task, system_prompt, skills, llm, workspace,
-                lessons, session_ctx, phase1_ids,
+                lessons, lesson_scope, phase1_ids,
             )
         )
 
+    # Resolve session: resume if --session, otherwise prompt the user
+    # (or create silently if no sessions exist yet).
     state = {
         "think_on": True, "net_on": True,
         "show_tool_call": False, "show_think": False, "show_lessons": False,
     }
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
-    injected_ids: set[str] = set(phase1_ids)
-    loaded_skills: set[str] = set()
-    last_reflection_idx = 1  # everything after the system message
+    session_choice = args.session
+    if session_choice is None:
+        session_choice = _choose_session_interactively(workspace)
+
+    session: Session
+    if session_choice:
+        sid = session_choice
+        if sid == "last":
+            last = find_last(workspace)
+            if last is None:
+                print("leo: no sessions in workspace to resume", file=sys.stderr)
+                sys.exit(2)
+            sid = last.id
+        try:
+            session, messages = load_session(workspace, sid)
+        except FileNotFoundError as e:
+            print(f"leo: {e}", file=sys.stderr)
+            sys.exit(2)
+        if not messages:
+            messages = [{"role": "system", "content": system_prompt}]
+        injected_ids = set(session.injected_ids) | set(phase1_ids)
+        loaded_skills = set(session.loaded_skills)
+        last_reflection_idx = session.reflection_idx
+        if session.toggles:
+            state.update(session.toggles)
+        print(f"(resumed session {session.id} — {len(messages)} messages)")
+    else:
+        messages = [{"role": "system", "content": system_prompt}]
+        injected_ids = set(phase1_ids)
+        loaded_skills = set()
+        last_reflection_idx = 1
+        session = new_session(
+            workspace, model=llm.model, toggles=state, title="(untitled)",
+        )
+        append_messages(session, messages)  # persist system message
+    persist_idx = len(messages)
 
     def print_status() -> None:
         print(f"model:         {llm.model}")
@@ -933,6 +1169,7 @@ def main() -> None:
         print(f"show-think:    {'on' if state['show_think'] else 'off'}")
         print(f"show-lessons:  {'on' if state['show_lessons'] else 'off'}")
         print(f"workspace:     {workspace}")
+        print(f"session:       {session.id}")
         print(f"skills:        {len(skills)} found, {len(loaded_skills)} loaded")
         print(
             f"lessons:       {lessons.found_count} found, "
@@ -965,9 +1202,14 @@ def main() -> None:
                     messages,
                     llm=llm,
                     lessons=lessons,
-                    session_ctx=session_ctx,
+                    lesson_scope=lesson_scope,
                     last_reflection_idx=last_reflection_idx,
                 )
+            session.reflection_idx = last_reflection_idx
+            session.toggles = dict(state)
+            session.injected_ids = sorted(injected_ids)
+            session.loaded_skills = sorted(loaded_skills)
+            session.write_meta()
             break
         toggle_msg = _apply_toggle(state, user_input)
         if toggle_msg is not None:
@@ -981,6 +1223,10 @@ def main() -> None:
             injected_ids = set(phase1_ids)
             loaded_skills = set()
             last_reflection_idx = 1
+            # Truncate the persisted record and re-seed with the system message.
+            session.messages_path.write_text("")
+            append_messages(session, messages)
+            persist_idx = len(messages)
             print("(history cleared)")
             continue
         if user_input == "/reflect":
@@ -988,7 +1234,7 @@ def main() -> None:
                 messages,
                 llm=llm,
                 lessons=lessons,
-                session_ctx=session_ctx,
+                lesson_scope=lesson_scope,
                 last_reflection_idx=last_reflection_idx,
             )
             continue
@@ -1044,7 +1290,7 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
         # Phase 2: on_prompt injection before the LLM sees the new turn.
         op_text, op_ids = lessons.apply_on_prompt(
-            session_ctx, user_input, injected_ids,
+            lesson_scope, user_input, injected_ids,
         )
         if op_ids:
             messages.append({"role": "user", "content": op_text})
@@ -1101,12 +1347,20 @@ def main() -> None:
                 messages, llm=llm, skills=skills, workspace=workspace,
                 think_on=state["think_on"], net_on=state["net_on"],
                 on_reply=on_reply, on_think=on_think, on_tool=on_tool,
-                lessons=lessons, session_ctx=session_ctx,
+                lessons=lessons, lesson_scope=lesson_scope,
                 injected_ids=injected_ids, on_replan=on_replan,
                 on_lesson_inject=on_lesson_inject,
                 loaded_skills=loaded_skills,
             )
             rt.end(outputs={"reply": reply_text})
+        # Persist any new messages produced this turn (user + assistant +
+        # tool messages + any lesson-injected system notes).
+        if len(messages) > persist_idx:
+            append_messages(session, messages[persist_idx:])
+            persist_idx = len(messages)
+        if session.title == "(untitled)":
+            session.title = derive_title_from_messages(messages)
+            session.write_meta()
 
 
 if __name__ == "__main__":

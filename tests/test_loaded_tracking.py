@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from leo.cli.leo import run_turn
-from leo.core.lessons import LessonStore, SessionContext
+from leo.core.lessons import LessonStore, LessonScope
 from leo.core.skill_core import Skill
 from leo.core.tools import ToolContext
 from leo.core.tools.skill_tool import load_skill

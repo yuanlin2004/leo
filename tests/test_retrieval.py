@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from leo.core.lessons.retrieval import (
-    SessionContext,
+    LessonScope,
     ToolCallView,
     scope_matches,
     scope_specificity,
@@ -35,7 +35,7 @@ def lesson(
 
 
 def ctx(project=None, model="m1", skills=()):
-    return SessionContext(project=project, model=model, skills=frozenset(skills))
+    return LessonScope(project=project, model=model, skills=frozenset(skills))
 
 
 # -- scope_matches: empty / global ----------------------------------------

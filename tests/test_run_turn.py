@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from leo.cli.leo import run_turn
-from leo.core.lessons import LessonStore, SessionContext
+from leo.core.lessons import LessonStore, LessonScope
 
 from .conftest import write_lesson
 
@@ -51,7 +51,7 @@ class FakeLLM:
         return resp
 
 
-def _drive(messages, llm, lessons=None, session_ctx=None,
+def _drive(messages, llm, lessons=None, lesson_scope=None,
            injected_ids=None, on_replan=None):
     """Call run_turn with no-op callbacks."""
     return run_turn(
@@ -65,7 +65,7 @@ def _drive(messages, llm, lessons=None, session_ctx=None,
         on_think=lambda s: None,
         on_tool=lambda n, a, r: None,
         lessons=lessons,
-        session_ctx=session_ctx,
+        lesson_scope=lesson_scope,
         injected_ids=injected_ids,
         on_replan=on_replan,
     )
@@ -98,7 +98,7 @@ def test_on_monologue_replans_on_thinking_match(tmp_path):
         trigger="trigger:\n  type: on_monologue\n  keywords: [report]",
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "summarize"}]
     llm = FakeLLM([
@@ -106,7 +106,7 @@ def test_on_monologue_replans_on_thinking_match(tmp_path):
         _fake_response(content="revised"),
     ])
     injected: set[str] = set()
-    reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    reply = _drive(msgs, llm, lessons=store, lesson_scope=ctx,
                    injected_ids=injected)
     assert reply == "revised"
     assert llm.calls == 2
@@ -131,11 +131,11 @@ def test_on_monologue_does_not_fire_on_answer_text(tmp_path):
         trigger="trigger:\n  type: on_monologue\n  keywords: [report]",
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
     msgs = [{"role": "user", "content": "summarize"}]
     llm = FakeLLM([_fake_response(content="Here is the report.")])
     injected: set[str] = set()
-    _drive(msgs, llm, lessons=store, session_ctx=ctx, injected_ids=injected)
+    _drive(msgs, llm, lessons=store, lesson_scope=ctx, injected_ids=injected)
     assert llm.calls == 1
     assert injected == set()
     notes = [m for m in msgs if m["role"] == "user"
@@ -153,14 +153,14 @@ def test_on_monologue_dedups_across_calls(tmp_path):
         trigger="trigger:\n  type: on_monologue\n  keywords: [report]",
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
     msgs = [{"role": "user", "content": "go"}]
     llm = FakeLLM([
         _fake_response(content="<think>report once</think>draft"),
         _fake_response(content="<think>report twice</think>final"),
     ])
     injected: set[str] = set()
-    _drive(msgs, llm, lessons=store, session_ctx=ctx, injected_ids=injected)
+    _drive(msgs, llm, lessons=store, lesson_scope=ctx, injected_ids=injected)
     monologue_msgs = [m for m in msgs if m["role"] == "user"
                       and "Additional lessons now in scope" in m["content"]]
     assert len(monologue_msgs) == 1
@@ -179,7 +179,7 @@ def test_replan_pops_draft_and_re_calls_llm(tmp_path):
         ),
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "do it"}]
     llm = FakeLLM([
@@ -188,7 +188,7 @@ def test_replan_pops_draft_and_re_calls_llm(tmp_path):
     ])
     injected: set[str] = set()
     replan_calls: list[list[str]] = []
-    reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    reply = _drive(msgs, llm, lessons=store, lesson_scope=ctx,
                    injected_ids=injected,
                    on_replan=lambda ids: replan_calls.append(list(ids)))
 
@@ -215,7 +215,7 @@ def test_replan_cap_dispatches_after_two(tmp_path):
     write_lesson(tmp_path, "gotcha", "L3",
                  trigger="trigger:\n  type: on_tool_call\n  tool: t3")
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "go"}]
     llm = FakeLLM([
@@ -226,7 +226,7 @@ def test_replan_cap_dispatches_after_two(tmp_path):
     ])
     injected: set[str] = set()
     replan_calls: list[list[str]] = []
-    reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    reply = _drive(msgs, llm, lessons=store, lesson_scope=ctx,
                    injected_ids=injected,
                    on_replan=lambda ids: replan_calls.append(list(ids)))
 
@@ -246,7 +246,7 @@ def test_no_replan_when_tool_unrelated(tmp_path):
     write_lesson(tmp_path, "gotcha", "no-bash",
                  trigger="trigger:\n  type: on_tool_call\n  tool: bash")
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "go"}]
     llm = FakeLLM([
@@ -255,7 +255,7 @@ def test_no_replan_when_tool_unrelated(tmp_path):
     ])
     injected: set[str] = set()
     replan_calls: list[list[str]] = []
-    reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    reply = _drive(msgs, llm, lessons=store, lesson_scope=ctx,
                    injected_ids=injected,
                    on_replan=lambda ids: replan_calls.append(list(ids)))
 
@@ -270,7 +270,7 @@ def test_dedup_prevents_repeated_replan(tmp_path):
     write_lesson(tmp_path, "gotcha", "no-bash",
                  trigger="trigger:\n  type: on_tool_call\n  tool: bash")
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "go"}]
     llm = FakeLLM([
@@ -280,7 +280,7 @@ def test_dedup_prevents_repeated_replan(tmp_path):
     ])
     injected: set[str] = set()
     replan_calls: list[list[str]] = []
-    reply = _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    reply = _drive(msgs, llm, lessons=store, lesson_scope=ctx,
                    injected_ids=injected,
                    on_replan=lambda ids: replan_calls.append(list(ids)))
 
@@ -301,7 +301,7 @@ def test_on_replan_called_for_thinking_monologue_match(tmp_path):
         trigger="trigger:\n  type: on_monologue\n  keywords: [report]",
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "summarize"}]
     llm = FakeLLM([
@@ -323,7 +323,7 @@ def test_on_replan_called_for_thinking_monologue_match(tmp_path):
         on_think=lambda s: None,
         on_tool=lambda n, a, r: None,
         lessons=store,
-        session_ctx=ctx,
+        lesson_scope=ctx,
         injected_ids=injected,
         on_replan=lambda ids: replan_calls.append(list(ids)),
         on_lesson_inject=lambda phase, ids: inject_calls.append((phase, list(ids))),
@@ -341,7 +341,7 @@ def test_on_monologue_injected_after_tool_result(tmp_path):
         trigger="trigger:\n  type: on_monologue\n  keywords: [error]",
     )
     store = LessonStore([tmp_path])
-    ctx = SessionContext(project=None, model="m", skills=frozenset())
+    ctx = LessonScope(project=None, model="m", skills=frozenset())
 
     msgs = [{"role": "user", "content": "go"}]
     # First LLM call: a tool call to an unknown tool (returns
@@ -352,7 +352,7 @@ def test_on_monologue_injected_after_tool_result(tmp_path):
         _fake_response(content="recovered"),
     ])
     injected: set[str] = set()
-    _drive(msgs, llm, lessons=store, session_ctx=ctx,
+    _drive(msgs, llm, lessons=store, lesson_scope=ctx,
            injected_ids=injected)
 
     # Find the system note that was injected after the tool result.

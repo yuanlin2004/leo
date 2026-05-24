@@ -13,7 +13,7 @@ DEFAULT_TOKEN_BUDGET = 1500
 
 
 @dataclass(frozen=True)
-class SessionContext:
+class LessonScope:
     """The runtime values scope predicates are matched against."""
     project: str | None  # $LEO_PROJECT, None if unset
     model: str | None    # $LEO_LLM_MODEL, None if unset
@@ -27,7 +27,7 @@ class ToolCallView:
     arguments: str  # raw JSON string
 
 
-def scope_matches(scope: Scope, ctx: SessionContext) -> bool:
+def scope_matches(scope: Scope, ctx: LessonScope) -> bool:
     """True if every present predicate in scope matches ctx."""
     if scope.project is not None:
         if ctx.project is None:
@@ -67,7 +67,7 @@ def scope_specificity(scope: Scope) -> int:
 
 
 def select_always(
-    lessons: list[Lesson], ctx: SessionContext
+    lessons: list[Lesson], ctx: LessonScope
 ) -> list[Lesson]:
     """Phase 1: pick `always`-trigger lessons whose scope matches."""
     out = [
@@ -80,7 +80,7 @@ def select_always(
 
 def select_on_prompt(
     lessons: list[Lesson],
-    ctx: SessionContext,
+    ctx: LessonScope,
     prompt: str,
     *,
     exclude: Iterable[str] = (),
@@ -111,7 +111,7 @@ def select_on_prompt(
 
 def select_on_monologue(
     lessons: list[Lesson],
-    ctx: SessionContext,
+    ctx: LessonScope,
     text: str,
     *,
     exclude: Iterable[str] = (),
@@ -142,7 +142,7 @@ def select_on_monologue(
 
 def select_on_tool_call(
     lessons: list[Lesson],
-    ctx: SessionContext,
+    ctx: LessonScope,
     tool_calls: list[ToolCallView],
     *,
     exclude: Iterable[str] = (),

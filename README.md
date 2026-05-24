@@ -51,10 +51,40 @@ The `--enable-auto-tool-choice` and `--tool-call-parser qwen3_coder` flags are r
 
 ### 4. Run
 
+Leo runs inside a **workspace** — a project directory that holds a
+`.leo/` folder with project-scoped skills, lessons, memory, and session
+records. Initialize one before running:
+
 ```bash
-leo                            # start the chatbot
-leo --sysprompt my_sys.txt     # start the chatbot with a custom system prompt
-leo --task instruction.txt.    # start the task mode.
+leo init                       # create .leo/ in the current directory
+leo init path/to/project       # or in a chosen directory
+```
+
+Then:
+
+```bash
+leo                            # new session in the cwd workspace
+leo --workspace path/to/proj   # use a specific workspace (must contain .leo/)
+leo --session last             # resume the most recent session
+leo --session <id>             # resume a specific session
+leo --sysprompt my_sys.txt     # custom system prompt
+leo --task instruction.txt     # one-shot task mode (ephemeral, no session)
+```
+
+Workspace-local skills (`<ws>/.leo/skills/`) and lessons
+(`<ws>/.leo/lessons/`) layer on top of the global ones in `~/.leo/`,
+with the workspace winning on name collisions. New lessons learned via
+reflection are written to the workspace lesson store, keeping
+project-specific knowledge local.
+
+Each interactive run is recorded as a **session** under
+`<ws>/.leo/sessions/<id>/` (`meta.json` + append-only `messages.jsonl`).
+Manage them with:
+
+```bash
+leo session list               # list sessions in the current workspace
+leo session show <id>          # print meta + message count
+leo session rm <id>            # delete a session
 ```
 
 Type `/help` inside the chat REPL for commands.

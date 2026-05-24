@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from leo.core.lessons import LessonStore, SessionContext
+from leo.core.lessons import LessonStore, LessonScope
 
 from .conftest import write_lesson
 
@@ -87,8 +87,8 @@ def test_in_scope_filters_correctly(tmp_path):
         scope="scope:\n  project: [leo]",
     )
     store = LessonStore([tmp_path])
-    nothing_set = SessionContext(project=None, model="m", skills=frozenset())
-    in_leo = SessionContext(project="leo", model="m", skills=frozenset())
+    nothing_set = LessonScope(project=None, model="m", skills=frozenset())
+    in_leo = LessonScope(project="leo", model="m", skills=frozenset())
     assert {l.id for l in store.in_scope(nothing_set)} == {"global"}
     assert {l.id for l in store.in_scope(in_leo)} == {"global", "leo-only"}
 
@@ -229,7 +229,7 @@ def test_apply_session_start_returns_text_and_ids(tmp_path):
     )
     store = LessonStore([tmp_path])
     text, ids = store.apply_session_start(
-        SessionContext(project=None, model="m", skills=frozenset())
+        LessonScope(project=None, model="m", skills=frozenset())
     )
     # Only the always-trigger lesson contributes.
     assert ids == ["ap"]
@@ -246,11 +246,11 @@ def test_apply_session_start_filters_by_scope(tmp_path):
     write_lesson(tmp_path, "preference", "global")
     store = LessonStore([tmp_path])
     _text, ids = store.apply_session_start(
-        SessionContext(project=None, model="m", skills=frozenset())
+        LessonScope(project=None, model="m", skills=frozenset())
     )
     assert ids == ["global"]
     _text, ids = store.apply_session_start(
-        SessionContext(project="leo", model="m", skills=frozenset())
+        LessonScope(project="leo", model="m", skills=frozenset())
     )
     assert set(ids) == {"global", "leo-only"}
 
@@ -264,7 +264,7 @@ def test_apply_session_start_empty_when_no_always(tmp_path):
     )
     store = LessonStore([tmp_path])
     text, ids = store.apply_session_start(
-        SessionContext(project=None, model="m", skills=frozenset())
+        LessonScope(project=None, model="m", skills=frozenset())
     )
     assert text == ""
     assert ids == []
@@ -280,7 +280,7 @@ def test_render_session_block_only_includes_always(tmp_path):
     )
     store = LessonStore([tmp_path])
     block = store.render_session_block(
-        SessionContext(project=None, model="m", skills=frozenset())
+        LessonScope(project=None, model="m", skills=frozenset())
     )
     # Only the always-trigger lesson contributes a bullet.
     bullet_count = sum(1 for ln in block.splitlines() if ln.startswith("- "))

@@ -13,7 +13,7 @@ from leo.cli.leo import (
     _handle_lessons_command,
     run_reflection,
 )
-from leo.core.lessons import LessonStore, SessionContext
+from leo.core.lessons import LessonStore, LessonScope
 from leo.core.lessons.reflector import CreateOp, SkipOp, UpdateOp
 
 from .conftest import write_lesson
@@ -282,7 +282,7 @@ edited how
     ]
     run_reflection(
         msgs, llm=llm, lessons=store,
-        session_ctx=SessionContext(project=None, model="m", skills=frozenset()),
+        lesson_scope=LessonScope(project=None, model="m", skills=frozenset()),
         last_reflection_idx=1,
     )
     # The edited title slugified to "edited-title".

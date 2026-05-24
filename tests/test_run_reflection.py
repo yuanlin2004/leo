@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from leo.cli.leo import run_reflection
-from leo.core.lessons import LessonStore, SessionContext
+from leo.core.lessons import LessonStore, LessonScope
 
 
 class FakeLLM:
@@ -26,7 +26,7 @@ class FakeLLM:
 
 
 def _ctx():
-    return SessionContext(project=None, model="m", skills=frozenset())
+    return LessonScope(project=None, model="m", skills=frozenset())
 
 
 def _trace():
@@ -42,7 +42,7 @@ def test_no_ops_advances_index_and_writes_nothing(tmp_path, monkeypatch):
     store = LessonStore([tmp_path])
     llm = FakeLLM('{"ops": []}')
     new_idx = run_reflection(
-        _trace(), llm=llm, lessons=store, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     # Index advanced past the trace.
@@ -65,7 +65,7 @@ def test_create_op_applied_after_y(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     new_idx = run_reflection(
-        _trace(), llm=llm, lessons=store, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     assert new_idx == len(_trace())
@@ -87,7 +87,7 @@ def test_n_discards_proposals(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
     run_reflection(
-        _trace(), llm=llm, lessons=store, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     assert store.by_id("x") is None
@@ -110,7 +110,7 @@ def test_skip_n_drops_one_op(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "skip-2")
     run_reflection(
-        _trace(), llm=llm, lessons=store, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     assert store.by_id("keep") is not None
@@ -136,7 +136,7 @@ def test_update_op_applied(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     run_reflection(
-        _trace(), llm=llm, lessons=seed, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=seed, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     assert seed.by_id("original").why == "Refined reason."
@@ -146,7 +146,7 @@ def test_parser_error_keeps_index(tmp_path):
     store = LessonStore([tmp_path])
     llm = FakeLLM("not even close to JSON")
     new_idx = run_reflection(
-        _trace(), llm=llm, lessons=store, session_ctx=_ctx(),
+        _trace(), llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     # Index NOT advanced — user can /reflect again to retry.
@@ -159,7 +159,7 @@ def test_empty_trace_returns_index_unchanged(tmp_path):
     # last_reflection_idx already points past everything.
     msgs = [{"role": "system", "content": "sys"}]
     new_idx = run_reflection(
-        msgs, llm=llm, lessons=store, session_ctx=_ctx(),
+        msgs, llm=llm, lessons=store, lesson_scope=_ctx(),
         last_reflection_idx=1,
     )
     assert new_idx == 1

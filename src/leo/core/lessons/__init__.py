@@ -17,7 +17,7 @@ from leo.core.lessons.injection import (
     render_on_tool_call_message,
 )
 from leo.core.lessons.retrieval import (
-    SessionContext,
+    LessonScope,
     ToolCallView,
     scope_matches,
     select_always,
@@ -127,16 +127,16 @@ class LessonStore:
                 return l
         return None
 
-    def in_scope(self, ctx: SessionContext) -> list[Lesson]:
+    def in_scope(self, ctx: LessonScope) -> list[Lesson]:
         return [l for l in self.lessons if scope_matches(l.scope, ctx)]
 
-    def render_session_block(self, ctx: SessionContext) -> str:
+    def render_session_block(self, ctx: LessonScope) -> str:
         """Phase 1 injection text for the frozen system prompt."""
         text, _ids = self.apply_session_start(ctx)
         return text
 
     def apply_session_start(
-        self, ctx: SessionContext,
+        self, ctx: LessonScope,
     ) -> tuple[str, list[str]]:
         """Phase 1: pick `always`-trigger lessons in scope and render the block.
 
@@ -156,7 +156,7 @@ class LessonStore:
     # dedup set with the matched ids.
 
     def apply_on_prompt(
-        self, ctx: SessionContext, prompt: str, exclude: set[str],
+        self, ctx: LessonScope, prompt: str, exclude: set[str],
     ) -> tuple[str, list[str]]:
         matched = select_on_prompt(
             self.lessons, ctx, prompt, exclude=exclude
@@ -164,7 +164,7 @@ class LessonStore:
         return render_on_prompt_message(matched), [l.id for l in matched]
 
     def apply_on_monologue(
-        self, ctx: SessionContext, text: str, exclude: set[str],
+        self, ctx: LessonScope, text: str, exclude: set[str],
     ) -> tuple[str, list[str]]:
         matched = select_on_monologue(
             self.lessons, ctx, text, exclude=exclude
@@ -173,7 +173,7 @@ class LessonStore:
 
     def apply_on_tool_call(
         self,
-        ctx: SessionContext,
+        ctx: LessonScope,
         tool_calls: list[ToolCallView],
         exclude: set[str],
     ) -> tuple[str, list[str]]:
@@ -327,7 +327,7 @@ def _root_of_path(roots: list[Path], path: Path) -> Path:
 __all__ = [
     "LessonStore",
     "LoadIssue",
-    "SessionContext",
+    "LessonScope",
     "ToolCallView",
     "WriteError",
     "render_frozen_block",
