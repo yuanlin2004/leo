@@ -6,6 +6,8 @@ import { ObservabilityColumn } from "@/components/ObservabilityColumn"
 import { SessionSettingsDialog } from "@/components/SessionSettingsDialog"
 import { ReflectionDialog } from "@/components/ReflectionDialog"
 import { WorkspacePickerDialog } from "@/components/WorkspacePickerDialog"
+import { AgentPickerDialog } from "@/components/AgentPickerDialog"
+import { AgentsDialog } from "@/components/AgentsDialog"
 import { api } from "@/lib/api"
 import type { AgentEvent, Me, Message, SessionDetail, SessionSummary } from "@/lib/api"
 import { useEventStream } from "@/lib/sse"
@@ -15,6 +17,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reflectOpen, setReflectOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [agentsBuilderOpen, setAgentsBuilderOpen] = useState(false)
+  // After a session is created with an agent that has an initial_user_prompt,
+  // we want to prefill the chat input. ChatColumn reads this and clears it.
+  const [pendingInputSeed, setPendingInputSeed] = useState<string>("")
 
   // -- server identity (workspace + model) ------------------------------
   const [me, setMe] = useState<Me | null>(null)
@@ -149,10 +156,31 @@ export default function App() {
   const isRunning = detail?.is_running ?? false
 
   const handleCreate = useCallback(async () => {
-    const s = await api.createSession()
-    await refreshSessions()
-    setActiveSid(s.id)
-  }, [refreshSessions])
+    // Open the picker. Actual creation happens in handleCreateWithAgent.
+    setAgentPickerOpen(true)
+  }, [])
+
+  const handleCreateWithAgent = useCallback(
+    async (agent_id: string, title: string | null) => {
+      const s = await api.createSession({
+        agent_id,
+        title: title ?? undefined,
+      })
+      await refreshSessions()
+      setActiveSid(s.id)
+      // If the chosen agent has an initial user prompt, seed the input
+      // box once. The detail GET happens via the activeSid effect.
+      try {
+        const detail = await api.getSession(s.id)
+        if (detail.initial_user_prompt) {
+          setPendingInputSeed(detail.initial_user_prompt)
+        }
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [refreshSessions],
+  )
 
   const handleDelete = useCallback(
     async (sid: string) => {
@@ -241,6 +269,7 @@ export default function App() {
         isDark={isDark}
         onToggleTheme={() => setIsDark(!isDark)}
         onOpenWorkspacePicker={() => setPickerOpen(true)}
+        onOpenAgentsBuilder={() => setAgentsBuilderOpen(true)}
       />
       <div className="flex-1 flex min-h-0">
         <SessionList
@@ -264,6 +293,8 @@ export default function App() {
           showThink={Boolean((detail?.toggles as Record<string, unknown>)?.show_think ?? true)}
           showToolUse={Boolean((detail?.toggles as Record<string, unknown>)?.show_tool_use ?? true)}
           showReflection={Boolean((detail?.toggles as Record<string, unknown>)?.show_reflection ?? false)}
+          inputSeed={pendingInputSeed}
+          onConsumeInputSeed={() => setPendingInputSeed("")}
         />
         <ObservabilityColumn events={events} detail={detail} />
       </div>
@@ -291,6 +322,15 @@ export default function App() {
         onClose={() => setPickerOpen(false)}
         currentWorkspace={me?.workspace ?? null}
         onSwitched={handleWorkspaceSwitched}
+      />
+      <AgentPickerDialog
+        open={agentPickerOpen}
+        onClose={() => setAgentPickerOpen(false)}
+        onCreate={handleCreateWithAgent}
+      />
+      <AgentsDialog
+        open={agentsBuilderOpen}
+        onClose={() => setAgentsBuilderOpen(false)}
       />
     </div>
   )

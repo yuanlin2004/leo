@@ -56,8 +56,14 @@ export function SessionList({
                       )}
                       <span className="text-sm truncate">{s.title}</span>
                     </div>
-                    <div className="font-mono text-[10px] text-muted-foreground mt-0.5">
-                      {s.id} · {s.message_count} msgs
+                    <div className="font-mono text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                      <span>{s.id} · {s.message_count} msgs</span>
+                      {s.agent_id && s.agent_id !== "leo" && (
+                        <span className="px-1 py-0.5 rounded border text-[9px] uppercase tracking-wider"
+                              title={`Agent: ${s.agent_id}`}>
+                          {s.agent_id}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button

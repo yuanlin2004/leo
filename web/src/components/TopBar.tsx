@@ -1,4 +1,4 @@
-import { Sun, Moon, Activity, Circle, FolderTree } from "lucide-react"
+import { Sun, Moon, Activity, Circle, FolderTree, Bot } from "lucide-react"
 import { cn } from "@/lib/utils"
 import leoLogo from "@/assets/leo-logo.svg"
 
@@ -9,10 +9,12 @@ type Props = {
   isDark: boolean
   onToggleTheme: () => void
   onOpenWorkspacePicker: () => void
+  onOpenAgentsBuilder: () => void
 }
 
 export function TopBar({
   workspace, model, isRunning, isDark, onToggleTheme, onOpenWorkspacePicker,
+  onOpenAgentsBuilder,
 }: Props) {
   return (
     <header
@@ -56,6 +58,14 @@ export function TopBar({
           )}
           {isRunning ? "running" : "idle"}
         </span>
+        <button
+          onClick={onOpenAgentsBuilder}
+          className="flex items-center gap-1 text-white/70 hover:text-white transition-colors p-1 rounded text-xs font-mono"
+          title="Manage agents"
+        >
+          <Bot className="w-4 h-4" />
+          <span className="hidden md:inline">agents</span>
+        </button>
         <button
           onClick={onToggleTheme}
           className="text-white/70 hover:text-white transition-colors p-1 rounded"

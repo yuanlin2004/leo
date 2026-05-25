@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from leo.core.agents import AgentSpec, filter_skills, get_agent
 from leo.core.lessons import LessonStore, LessonScope
 from leo.core.llm import LLM
 from leo.core.skill_core import discover_skills
@@ -63,6 +64,13 @@ class RunContext:
     system_prompt: str = ""
     phase1_ids: list[str] = field(default_factory=list)
     lesson_issues: list = field(default_factory=list)
+    # The agent this context was built for. None when no agent was
+    # specified (legacy callers — equivalent to the builtin "leo" agent
+    # but without explicit binding).
+    agent: AgentSpec | None = None
+    # Skills the agent referenced but that aren't installed; surfaced
+    # to the operator as a warning but not fatal.
+    missing_agent_skills: list[str] = field(default_factory=list)
 
 
 def _layered_skills(workspace: Path) -> list:
@@ -86,15 +94,37 @@ def build_run_context(
     workspace: Path,
     *,
     base_system_prompt: str | None = None,
+    agent_id: str | None = None,
 ) -> RunContext:
     """Build the per-workspace run context.
 
-    `base_system_prompt` overrides `DEFAULT_SYSTEM_PROMPT`; the skills
-    block and the session-start lessons block are appended.
-    """
-    system_prompt = base_system_prompt or DEFAULT_SYSTEM_PROMPT
+    When `agent_id` is given, the agent's system prompt is prepended to
+    the base (or default) prompt, and the installed skills are filtered
+    to the agent's allowed set (an empty list on the agent means "no
+    filter — expose all installed skills").
 
-    skills = _layered_skills(workspace)
+    Skills the agent references but that aren't installed are reported
+    via `missing_agent_skills` — non-fatal, surfaced to the operator.
+    """
+    base = base_system_prompt or DEFAULT_SYSTEM_PROMPT
+
+    agent: AgentSpec | None = None
+    missing_skills: list[str] = []
+    if agent_id is not None:
+        agent = get_agent(agent_id)
+
+    # The agent's system_prompt prepends LEO's base prompt. Empty agent
+    # prompt = the builtin leo agent, equivalent to today's behavior.
+    if agent and agent.system_prompt.strip():
+        system_prompt = f"{agent.system_prompt.strip()}\n\n{base}"
+    else:
+        system_prompt = base
+
+    installed = _layered_skills(workspace)
+    if agent:
+        skills, missing_skills = filter_skills(installed, agent.skills)
+    else:
+        skills = installed
     skills_block = _format_skills_block(skills)
     if skills_block:
         system_prompt = f"{system_prompt}\n\n{skills_block}"
@@ -121,4 +151,6 @@ def build_run_context(
         system_prompt=system_prompt,
         phase1_ids=list(phase1_ids),
         lesson_issues=list(lessons.issues),
+        agent=agent,
+        missing_agent_skills=missing_skills,
     )

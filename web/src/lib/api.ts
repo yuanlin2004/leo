@@ -35,6 +35,18 @@ export type SessionSummary = {
   model: string | null
   message_count: number
   is_running: boolean
+  agent_id: string
+}
+
+export type AgentDTO = {
+  id: string
+  name: string
+  description: string
+  system_prompt: string
+  initial_user_prompt: string
+  skills: string[]
+  default_think: boolean
+  builtin: boolean
 }
 
 export type Message = {
@@ -60,6 +72,8 @@ export type SessionDetail = {
   is_running: boolean
   loaded_skills: string[]
   injected_lesson_ids: string[]
+  agent_id: string
+  initial_user_prompt: string
 }
 
 export type SkillInfo = {
@@ -165,10 +179,13 @@ export const api = {
     ),
   forgetLesson: (id: string) =>
     http<void>(`/api/lessons/${id}`, { method: "DELETE" }),
-  createSession: (title?: string) =>
+  createSession: (opts: { title?: string; agent_id?: string } = {}) =>
     http<SessionSummary>("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ title: title ?? null }),
+      body: JSON.stringify({
+        title: opts.title ?? null,
+        agent_id: opts.agent_id ?? null,
+      }),
     }),
   getSession: (sid: string) => http<SessionDetail>(`/api/sessions/${sid}`),
   deleteSession: (sid: string) =>
@@ -186,6 +203,20 @@ export const api = {
     const qs = path ? `?path=${encodeURIComponent(path)}` : ""
     return http<FsListing>(`/api/fs/list${qs}`)
   },
+  listAgents: () => http<AgentDTO[]>("/api/agents"),
+  getAgent: (id: string) => http<AgentDTO>(`/api/agents/${id}`),
+  createAgent: (a: Omit<AgentDTO, "builtin">) =>
+    http<AgentDTO>("/api/agents", {
+      method: "POST",
+      body: JSON.stringify(a),
+    }),
+  updateAgent: (id: string, a: Omit<AgentDTO, "id" | "builtin">) =>
+    http<AgentDTO>(`/api/agents/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(a),
+    }),
+  deleteAgent: (id: string) =>
+    http<void>(`/api/agents/${id}`, { method: "DELETE" }),
   openWorkspace: (path: string) =>
     http<Me>("/api/workspace/open", {
       method: "POST",

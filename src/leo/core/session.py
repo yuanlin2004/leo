@@ -56,6 +56,9 @@ class Session:
     toggles: dict = field(default_factory=dict)
     injected_ids: list[str] = field(default_factory=list)
     loaded_skills: list[str] = field(default_factory=list)
+    # Agent type this session was created with. Legacy sessions (created
+    # before agents existed) have agent_id="leo" virtualized at load.
+    agent_id: str = "leo"
     # In-memory only — not persisted to meta.json. Source of truth for the
     # value is events.jsonl itself; recomputed on session load.
     next_event_seq: int = 1
@@ -89,6 +92,7 @@ class Session:
             "toggles": self.toggles,
             "injected_ids": self.injected_ids,
             "loaded_skills": self.loaded_skills,
+            "agent_id": self.agent_id,
         }
 
     def write_meta(self) -> None:
@@ -104,6 +108,7 @@ def new_session(
     model: str | None,
     toggles: dict,
     title: str = "(untitled)",
+    agent_id: str = "leo",
 ) -> Session:
     sid = _new_id()
     sdir = _sessions_root(workspace) / sid
@@ -118,6 +123,7 @@ def new_session(
         started_at=now,
         last_active=now,
         toggles=dict(toggles),
+        agent_id=agent_id,
     )
     # Initialize files so an empty session is still well-formed.
     session.messages_path.touch()
@@ -143,6 +149,8 @@ def load_session(workspace: Path, sid: str) -> tuple[Session, list[dict]]:
         toggles=meta.get("toggles", {}),
         injected_ids=list(meta.get("injected_ids", [])),
         loaded_skills=list(meta.get("loaded_skills", [])),
+        # Legacy sessions (pre-agent feature) virtualize to "leo".
+        agent_id=meta.get("agent_id", "leo"),
     )
     messages: list[dict] = []
     mp = session.messages_path
@@ -259,6 +267,7 @@ def list_sessions(workspace: Path) -> list[Session]:
             toggles=meta.get("toggles", {}),
             injected_ids=list(meta.get("injected_ids", [])),
             loaded_skills=list(meta.get("loaded_skills", [])),
+            agent_id=meta.get("agent_id", "leo"),
         ))
     # Most-recent first.
     out.sort(key=lambda s: s.last_active or s.started_at, reverse=True)

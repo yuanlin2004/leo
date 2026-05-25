@@ -38,6 +38,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from leo.core.agents import (
+    AGENTS_ROOT,
+    AgentError,
+    AgentSpec,
+    BUILTIN_LEO_ID,
+    delete_agent,
+    discover_agents,
+    get_agent,
+    slugify_name,
+    unique_id,
+    write_agent,
+)
 from leo.core.lessons import WriteError
 from leo.core.lessons.reflector import (
     CreateOp,
@@ -47,6 +59,7 @@ from leo.core.lessons.reflector import (
     reflect,
 )
 from leo.core.session import (
+    append_messages,
     count_messages,
     delete_session,
     list_sessions,
@@ -74,6 +87,31 @@ _SERVER_STATE_DIR = Path.home() / ".leo-server"
 
 class NewSessionRequest(BaseModel):
     title: str | None = None
+    agent_id: str | None = None        # defaults to "leo" if omitted
+
+
+class AgentDTO(BaseModel):
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    initial_user_prompt: str
+    skills: list[str]
+    default_think: bool
+    builtin: bool
+
+
+class AgentWriteRequest(BaseModel):
+    # `id` is no longer required from the client. POST derives it by
+    # slugifying `name` and disambiguating collisions; PUT ignores this
+    # field and uses the path parameter.
+    id: str | None = None
+    name: str
+    description: str = ""
+    system_prompt: str = ""
+    initial_user_prompt: str = ""
+    skills: list[str] = []
+    default_think: bool = True
 
 
 class PatchSessionRequest(BaseModel):
@@ -103,6 +141,7 @@ class SessionSummary(BaseModel):
     model: str | None
     message_count: int
     is_running: bool
+    agent_id: str
 
 
 class MeResponse(BaseModel):
@@ -153,6 +192,10 @@ class SessionDetail(BaseModel):
     is_running: bool
     loaded_skills: list[str]
     injected_lesson_ids: list[str]
+    agent_id: str
+    # Surfaced so the UI can prefill the chat input on session open.
+    # Empty for built-in leo and agents that don't set one.
+    initial_user_prompt: str = ""
 
 
 class SkillInfo(BaseModel):
@@ -461,6 +504,102 @@ def create_app(workspace: Path | None, data_root: Path) -> FastAPI:
             model=request.app.state.ctx.llm.model,
         )
 
+    # -- agents -----------------------------------------------------------
+
+    def _agent_to_dto(spec: AgentSpec) -> AgentDTO:
+        return AgentDTO(
+            id=spec.id,
+            name=spec.name,
+            description=spec.description,
+            system_prompt=spec.system_prompt,
+            initial_user_prompt=spec.initial_user_prompt,
+            skills=list(spec.skills),
+            default_think=spec.default_think,
+            builtin=spec.builtin,
+        )
+
+    @app.get("/api/agents", response_model=list[AgentDTO])
+    def agents_list() -> list[AgentDTO]:
+        # Agents are workspace-independent (single global depot), so no
+        # ctx required. Still gated by /api/me's data_root containment
+        # at the front-door — agents live under $HOME/.leo/agents.
+        return [_agent_to_dto(a) for a in discover_agents()]
+
+    @app.get("/api/agents/{agent_id}", response_model=AgentDTO)
+    def agents_get(agent_id: str) -> AgentDTO:
+        try:
+            return _agent_to_dto(get_agent(agent_id))
+        except AgentError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post("/api/agents", response_model=AgentDTO, status_code=201)
+    def agents_create(req: AgentWriteRequest) -> AgentDTO:
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        existing = discover_agents()
+        norm = name.casefold()
+        if any(a.name.strip().casefold() == norm for a in existing):
+            raise HTTPException(
+                status_code=409,
+                detail=f"an agent named {name!r} already exists",
+            )
+        # Derive id from name. Disambiguate against existing ids by
+        # appending -2, -3, ... — this only matters when a previous
+        # agent shared the same slug but a different name (e.g. accents
+        # or punctuation that strips identically).
+        base = slugify_name(name)
+        taken = {a.id for a in existing}
+        new_id = unique_id(base, existing=taken)
+        spec = AgentSpec(
+            id=new_id, name=name, description=req.description,
+            system_prompt=req.system_prompt,
+            initial_user_prompt=req.initial_user_prompt,
+            skills=list(req.skills), default_think=req.default_think,
+        )
+        try:
+            write_agent(spec)
+        except AgentError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return _agent_to_dto(get_agent(new_id))
+
+    @app.put("/api/agents/{agent_id}", response_model=AgentDTO)
+    def agents_update(agent_id: str, req: AgentWriteRequest) -> AgentDTO:
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        # Reject if another agent already uses this name. Exclude the
+        # one being edited from the duplicate check.
+        norm = name.casefold()
+        for a in discover_agents():
+            if a.id == agent_id:
+                continue
+            if a.name.strip().casefold() == norm:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"an agent named {name!r} already exists",
+                )
+        spec = AgentSpec(
+            id=agent_id, name=name, description=req.description,
+            system_prompt=req.system_prompt,
+            initial_user_prompt=req.initial_user_prompt,
+            skills=list(req.skills), default_think=req.default_think,
+        )
+        try:
+            write_agent(spec)
+        except AgentError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return _agent_to_dto(get_agent(agent_id))
+
+    @app.delete("/api/agents/{agent_id}", status_code=204)
+    def agents_delete(agent_id: str) -> None:
+        try:
+            delete_agent(agent_id)
+        except AgentError as e:
+            # builtin-with-no-override and unknown both raise; both
+            # map nicely to 404 from the client's perspective.
+            raise HTTPException(status_code=404, detail=str(e))
+
     # -- skills + lessons -------------------------------------------------
 
     @app.get("/api/skills", response_model=list[SkillInfo])
@@ -512,22 +651,53 @@ def create_app(workspace: Path | None, data_root: Path) -> FastAPI:
                 model=s.model,
                 message_count=count_messages(s),
                 is_running=sup.is_running(s.id),
+                agent_id=s.agent_id,
             ))
         return out
 
     @app.post("/api/sessions", response_model=SessionSummary, status_code=201)
     def sessions_create(req: NewSessionRequest, request: Request) -> SessionSummary:
+        """Create a session bound to an agent. The agent's system prompt
+        is composed (agent + base + skills + lessons) and persisted as
+        the system message in messages.jsonl — sessions are immutable
+        snapshots, so editing the agent later does NOT mutate them."""
         ctx = ctx_for(request)
+        agent_id = req.agent_id or "leo"
+        try:
+            per_session = build_run_context(
+                ctx.workspace, agent_id=agent_id,
+            )
+        except AgentError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        for missing in per_session.missing_agent_skills:
+            print(
+                f"(agent {agent_id}: references missing skill {missing!r}, "
+                f"skipping)", file=sys.stderr,
+            )
+        # default_think from the agent seeds session.toggles.
+        default_think = (
+            per_session.agent.default_think if per_session.agent else True
+        )
         s = new_session(
             ctx.workspace,
             model=ctx.llm.model,
-            toggles={},
+            toggles={"think_on": default_think},
             title=req.title or "(untitled)",
+            agent_id=agent_id,
         )
+        # Bootstrap the messages log with the composed system prompt.
+        append_messages(
+            s, [{"role": "system", "content": per_session.system_prompt}],
+        )
+        # Carry the workspace's session-start lesson firings onto this
+        # session so the supervisor doesn't re-inject them.
+        s.injected_ids = list(per_session.phase1_ids)
+        s.write_meta()
         return SessionSummary(
             id=s.id, title=s.title, last_active=s.last_active,
             started_at=s.started_at, model=s.model,
-            message_count=0, is_running=False,
+            message_count=count_messages(s), is_running=False,
+            agent_id=s.agent_id,
         )
 
     @app.get("/api/sessions/{sid}", response_model=SessionDetail)
@@ -537,6 +707,13 @@ def create_app(workspace: Path | None, data_root: Path) -> FastAPI:
             s, messages = load_session(ctx.workspace, sid)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail=f"no session {sid}")
+        # Look up the agent's initial_user_prompt; fall back to "" if the
+        # agent has been deleted since session creation.
+        try:
+            ag = get_agent(s.agent_id)
+            initial = ag.initial_user_prompt
+        except AgentError:
+            initial = ""
         return SessionDetail(
             id=s.id, title=s.title, last_active=s.last_active,
             started_at=s.started_at, model=s.model, toggles=s.toggles,
@@ -544,6 +721,8 @@ def create_app(workspace: Path | None, data_root: Path) -> FastAPI:
             is_running=supervisor(request).is_running(sid),
             loaded_skills=list(s.loaded_skills),
             injected_lesson_ids=list(s.injected_ids),
+            agent_id=s.agent_id,
+            initial_user_prompt=initial,
         )
 
     @app.patch("/api/sessions/{sid}", response_model=SessionSummary)
@@ -577,6 +756,7 @@ def create_app(workspace: Path | None, data_root: Path) -> FastAPI:
             started_at=s.started_at, model=s.model,
             message_count=count_messages(s),
             is_running=supervisor(request).is_running(sid),
+            agent_id=s.agent_id,
         )
 
     @app.delete("/api/sessions/{sid}", status_code=204)

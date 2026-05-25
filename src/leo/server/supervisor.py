@@ -21,6 +21,7 @@ import traceback
 from typing import AsyncIterator, IO
 
 from leo.core.agent import CancelToken, run_turn
+from leo.core.agents import AgentError, filter_skills, get_agent
 from leo.core.events import Event
 from leo.core.session import (
     Session,
@@ -224,9 +225,22 @@ class RunSupervisor:
         try:
             ctx = self.ctx
             # Bootstrap an empty session with the system message.
+            # New sessions are pre-bootstrapped at create time (with the
+            # agent-composed system prompt); this branch only fires for
+            # the (legacy) case where a session has no system message.
             if not messages:
                 messages = [{"role": "system", "content": ctx.system_prompt}]
                 append_messages(session, messages)
+
+            # Resolve the agent for this session and apply its skill
+            # filter. Falls back to the unfiltered context if the agent
+            # has been deleted since session creation.
+            session_skills = ctx.skills
+            try:
+                agent = get_agent(session.agent_id)
+                session_skills, _missing = filter_skills(ctx.skills, agent.skills)
+            except AgentError:
+                pass
 
             persist_idx = len(messages)
             messages.append({"role": "user", "content": user_message})
@@ -268,7 +282,7 @@ class RunSupervisor:
             run_turn(
                 messages,
                 llm=ctx.llm,
-                skills=ctx.skills,
+                skills=session_skills,
                 workspace=session.workspace,
                 think_on=session.toggles.get("think_on", True),
                 net_on=session.toggles.get("net_on", True),

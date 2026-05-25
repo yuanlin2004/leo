@@ -20,16 +20,34 @@ type Props = {
   showThink: boolean
   showToolUse: boolean
   showReflection: boolean
+  /** Optional text to prefill the chat input. Caller is responsible for
+   * clearing it when consumed; the column writes it into local state on
+   * receipt. */
+  inputSeed: string
+  onConsumeInputSeed: () => void
 }
 
 export function ChatColumn({
   title, messages, events, streamDraft, isRunning, onSend, onCancel,
   onOpenSettings, onOpenReflect, canReflect,
   showThink, showToolUse, showReflection,
+  inputSeed, onConsumeInputSeed,
 }: Props) {
   const [draft, setDraft] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Consume an inbound seed once (e.g. agent's initial_user_prompt).
+  // Only replace the draft if the user hasn't started typing.
+  useEffect(() => {
+    if (inputSeed && !draft) {
+      setDraft(inputSeed)
+      textareaRef.current?.focus()
+    }
+    if (inputSeed) onConsumeInputSeed()
+    // Intentional: only re-run when inputSeed changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputSeed])
 
   // Auto-scroll to bottom on new message OR streaming progress.
   useEffect(() => {
