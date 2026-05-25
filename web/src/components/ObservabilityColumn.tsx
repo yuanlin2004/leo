@@ -9,12 +9,23 @@ type Tab = "trace" | "skills" | "lessons"
 type Props = {
   events: AgentEvent[]
   detail: SessionDetail | null
+  /** Drawer state below the lg breakpoint. Ignored on lg+. */
+  mobileOpen: boolean
 }
 
-export function ObservabilityColumn({ events, detail }: Props) {
+export function ObservabilityColumn({ events, detail, mobileOpen }: Props) {
   const [tab, setTab] = useState<Tab>("trace")
   return (
-    <aside className="w-96 border-l flex flex-col shrink-0 bg-muted/30">
+    <aside
+      className={cn(
+        // Drawer (default): solid card background.
+        "w-96 max-w-[90vw] border-l flex flex-col bg-card z-40",
+        // Desktop: static, in-flow, original tinted background.
+        "lg:static lg:translate-x-0 lg:z-auto shrink-0 lg:bg-muted/30",
+        "fixed top-12 bottom-0 right-0 transition-transform duration-200",
+        mobileOpen ? "translate-x-0 shadow-xl" : "translate-x-full",
+      )}
+    >
       <div className="flex border-b">
         <TabButton active={tab === "trace"} onClick={() => setTab("trace")}>
           <Activity className="w-3.5 h-3.5" />

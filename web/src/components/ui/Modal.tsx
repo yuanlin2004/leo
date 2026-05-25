@@ -30,11 +30,11 @@ export function Modal({
   if (!open) return null
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-3 sm:p-4"
       onClick={onClose}
     >
       <div
-        className={`relative w-full ${widthClass} max-h-[85vh] flex flex-col bg-card text-card-foreground border rounded-lg shadow-xl`}
+        className={`relative w-full ${widthClass} max-h-[90vh] sm:max-h-[85vh] flex flex-col bg-card text-card-foreground border rounded-lg shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between px-4 h-12 border-b">

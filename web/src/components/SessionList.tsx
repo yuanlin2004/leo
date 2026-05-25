@@ -8,13 +8,33 @@ type Props = {
   onSelect: (sid: string) => void
   onCreate: () => void
   onDelete: (sid: string) => void
+  /** Drawer state below the lg breakpoint. Ignored on lg+ (always visible). */
+  mobileOpen: boolean
+  onMobileClose: () => void
 }
 
 export function SessionList({
   sessions, activeSid, onSelect, onCreate, onDelete,
+  mobileOpen, onMobileClose,
 }: Props) {
+  // Wrapping <select> handler so picking a session on mobile also closes
+  // the drawer — otherwise the user has to dismiss it manually.
+  const select = (sid: string) => {
+    onSelect(sid)
+    onMobileClose()
+  }
   return (
-    <aside className="w-72 border-r flex flex-col shrink-0 bg-muted/30">
+    <aside
+      className={cn(
+        // Drawer (default): solid background so the chat underneath doesn't bleed through.
+        "w-72 border-r flex flex-col bg-card z-40",
+        // Desktop: static in the flex flow with the original tinted background.
+        "lg:static lg:translate-x-0 lg:z-auto shrink-0 lg:bg-muted/30",
+        // Mobile: fixed drawer sliding from the left, hidden by default.
+        "fixed top-12 bottom-0 left-0 transition-transform duration-200",
+        mobileOpen ? "translate-x-0 shadow-xl" : "-translate-x-full",
+      )}
+    >
       <div className="flex items-center justify-between px-3 h-10 border-b">
         <h2 className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
           Sessions
@@ -43,7 +63,7 @@ export function SessionList({
                     activeSid === s.id &&
                       "bg-accent border-l-[var(--color-illini-orange)]",
                   )}
-                  onClick={() => onSelect(s.id)}
+                  onClick={() => select(s.id)}
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">

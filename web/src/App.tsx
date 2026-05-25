@@ -22,6 +22,10 @@ export default function App() {
   // After a session is created with an agent that has an initial_user_prompt,
   // we want to prefill the chat input. ChatColumn reads this and clears it.
   const [pendingInputSeed, setPendingInputSeed] = useState<string>("")
+  // Mobile drawer state. Ignored above the lg breakpoint (panels are
+  // always visible in the flex flow there).
+  const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false)
+  const [obsDrawerOpen, setObsDrawerOpen] = useState(false)
 
   // -- server identity (workspace + model) ------------------------------
   const [me, setMe] = useState<Me | null>(null)
@@ -270,7 +274,20 @@ export default function App() {
         onToggleTheme={() => setIsDark(!isDark)}
         onOpenWorkspacePicker={() => setPickerOpen(true)}
         onOpenAgentsBuilder={() => setAgentsBuilderOpen(true)}
+        onToggleSessionsDrawer={() => setSessionsDrawerOpen((v) => !v)}
+        onToggleObsDrawer={() => setObsDrawerOpen((v) => !v)}
       />
+      {/* Mobile backdrop — shown only when a drawer is open and we're
+          below the lg breakpoint. Click anywhere closes both. */}
+      {(sessionsDrawerOpen || obsDrawerOpen) && (
+        <div
+          className="lg:hidden fixed inset-x-0 top-12 bottom-0 z-30 bg-black/40"
+          onClick={() => {
+            setSessionsDrawerOpen(false)
+            setObsDrawerOpen(false)
+          }}
+        />
+      )}
       <div className="flex-1 flex min-h-0">
         <SessionList
           sessions={sessions}
@@ -278,6 +295,8 @@ export default function App() {
           onSelect={setActiveSid}
           onCreate={handleCreate}
           onDelete={handleDelete}
+          mobileOpen={sessionsDrawerOpen}
+          onMobileClose={() => setSessionsDrawerOpen(false)}
         />
         <ChatColumn
           title={detail?.title ?? null}
@@ -296,7 +315,11 @@ export default function App() {
           inputSeed={pendingInputSeed}
           onConsumeInputSeed={() => setPendingInputSeed("")}
         />
-        <ObservabilityColumn events={events} detail={detail} />
+        <ObservabilityColumn
+          events={events}
+          detail={detail}
+          mobileOpen={obsDrawerOpen}
+        />
       </div>
       {detail && (
         <SessionSettingsDialog

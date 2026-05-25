@@ -123,8 +123,8 @@ export function ChatColumn({
           </div>
         )}
       </div>
-      <div className="border-t px-6 py-4 bg-card">
-        <div className="max-w-3xl mx-auto flex gap-2 items-end">
+      <div className="border-t px-4 sm:px-6 py-3 sm:py-4 bg-card">
+        <div className="max-w-3xl mx-auto flex flex-col sm:flex-row gap-2 sm:items-end">
           <textarea
             ref={textareaRef}
             value={draft}
@@ -145,7 +145,7 @@ export function ChatColumn({
           {isRunning ? (
             <button
               onClick={onCancel}
-              className="flex items-center gap-1 px-4 py-2 rounded-md border border-[var(--color-illini-orange)] text-[var(--color-illini-orange)] hover:bg-[var(--color-illini-orange)]/10 transition-colors font-mono text-sm"
+              className="flex items-center justify-center gap-1 w-full sm:w-auto px-4 py-2 rounded-md border border-[var(--color-illini-orange)] text-[var(--color-illini-orange)] hover:bg-[var(--color-illini-orange)]/10 transition-colors font-mono text-sm"
               title="Cancel the in-flight run"
             >
               <Square className="w-4 h-4" />
@@ -155,7 +155,7 @@ export function ChatColumn({
             <button
               onClick={submit}
               disabled={!draft.trim()}
-              className="flex items-center gap-1 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed font-mono text-sm"
+              className="flex items-center justify-center gap-1 w-full sm:w-auto px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed font-mono text-sm"
             >
               <Send className="w-4 h-4" />
               send
