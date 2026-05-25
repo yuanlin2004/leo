@@ -7,6 +7,7 @@ An LLM-based agent framework built from scratch on raw LLM APIs.
 - Python 3.10+
 - A running OpenAI-compatible LLM server. The default target is a local [vLLM](https://github.com/vllm-project/vllm) serving `Qwen/Qwen3.6-35B-A3B-FP8` at `http://localhost:8000/v1`; see `CLAUDE.md` for the `vllm serve` command. Override via `LEO_LLM_BASE_URL` / `LEO_LLM_MODEL` / `LEO_LLM_API_KEY`.
 - [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for sandboxing tool-invoked shell commands.
+- Node 22+ and npm (only if you want to build or develop the web UI; see [Web UI](#web-ui)).
 
 ## Setup
 
@@ -89,6 +90,64 @@ leo session rm <id>            # delete a session
 
 Type `/help` inside the chat REPL for commands.
 
+### Web UI
+
+Leo also has a browser front-end (chat + live observability) that runs over
+the same agent loop as the CLI. Build it once, then start the server:
+
+```bash
+# one-time build
+cd web && npm install && npm run build && cd ..
+
+# start the server against a workspace
+LEO_WS=path/to/workspace leo-server
+# open http://localhost:8765/
+```
+
+The server is single-user with no auth in this phase; treat it as a local
+development tool. The chat column streams tokens and tool calls via SSE,
+and the right column shows the raw event stream — `events.jsonl` is also
+written to disk alongside `messages.jsonl` for every session.
+
+#### Accessing from another machine
+
+`leo-server` binds to `127.0.0.1` by default — loopback only. To reach it
+from a different machine, you have two options:
+
+**Recommended: SSH tunnel** (no remote-access exposure, browse as if local):
+
+```bash
+# on the browsing machine
+ssh -L 8765:127.0.0.1:8765 <server-host>
+# leave the server on its default bind, then open http://localhost:8765/
+```
+
+**Direct LAN bind** (only on networks you trust — anyone who can reach the
+port can drive the agent and run tools in the sandbox, because there is no
+auth yet):
+
+```bash
+LEO_WS=path/to/workspace leo-server --host 0.0.0.0
+# then browse to http://<server-ip>:8765/
+```
+
+#### Vite dev server
+
+For active development of the front-end, run Vite separately so you get
+HMR; it proxies `/api` to the Python server:
+
+```bash
+# terminal 1
+LEO_WS=path/to/workspace leo-server
+
+# terminal 2
+cd web && npm run dev    # serves on http://localhost:5173 with HMR
+```
+
+Design and roadmap: [`docs/web-ui-design.md`](docs/web-ui-design.md).
+Multi-user auth, a folder picker, cancel semantics, and the full
+observability tabs (Skills / Lessons / Artifacts) are scoped there.
+
 ### Environment variables
 
 Leo loads a `.env` in the current working directory first, then `~/.env` (via `python-dotenv`). Later sources do not override keys already set — so shell env wins over project `.env`, which wins over `~/.env`. Recognized keys:
@@ -97,6 +156,8 @@ Leo loads a `.env` in the current working directory first, then `~/.env` (via `p
 - `LEO_LLM_BASE_URL` — defaults to `http://localhost:8000/v1`.
 - `LEO_LLM_MODEL` — defaults to `Qwen/Qwen3.6-35B-A3B-FP8`.
 - `LEO_LLM_API_KEY` — defaults to `EMPTY` (vLLM ignores it but the SDK requires something).
+- `LEO_WS` — initial workspace path for `leo-server` (default order: `$LEO_WS` → last-used → `$LEO_DATA_ROOT` → cwd; the directory must contain `.leo/`).
+- `LEO_DATA_ROOT` — root of the workspace picker for `leo-server` (default: `$HOME`). The browser UI can navigate and create workspaces anywhere under this path but cannot escape it.
 
 `.env` is gitignored.
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -11,88 +10,17 @@ from pathlib import Path
 
 from prompt_toolkit import PromptSession
 
-def _split_think(text: str | None) -> tuple[str, str]:
-    """Return (think, reply). Handles paired <think>...</think> and orphan </think>."""
-    if not text:
-        return "", text or ""
-    idx = text.rfind("</think>")
-    if idx == -1:
-        return "", text.strip()
-    think = re.sub(r"^\s*<think>\s*", "", text[:idx], count=1).strip()
-    reply = text[idx + len("</think>"):].strip()
-    return think, reply
-
-
-class _ThinkStripper:
-    """Streams text with <think>...</think> suppressed (or rerouted) across chunk boundaries.
-
-    `on_think_end` (optional): called once per `</think>` close. If it returns
-    truthy, subsequent reply bytes are dropped instead of being forwarded to
-    `on_reply` — used to abort live emission when a lesson fires on the
-    thinking text and we plan to replan.
-    """
-
-    def __init__(self, on_reply, on_think=None, on_think_end=None, start_in_think=False):
-        self.on_reply = on_reply
-        self.on_think = on_think
-        self.on_think_end = on_think_end
-        self.in_think = start_in_think
-        self.buf = ""
-        self.suppress_reply = False
-
-    @staticmethod
-    def _partial_tail(text: str, tag: str) -> int:
-        for n in range(min(len(tag) - 1, len(text)), 0, -1):
-            if tag.startswith(text[-n:]):
-                return n
-        return 0
-
-    def _emit_reply(self, s: str) -> None:
-        if s and not self.suppress_reply:
-            self.on_reply(s)
-
-    def feed(self, chunk: str) -> None:
-        text = self.buf + chunk
-        self.buf = ""
-        while text:
-            if self.in_think:
-                i = text.find("</think>")
-                if i == -1:
-                    keep = self._partial_tail(text, "</think>")
-                    emit, self.buf = (text[:-keep], text[-keep:]) if keep else (text, "")
-                    if emit and self.on_think:
-                        self.on_think(emit)
-                    return
-                if i > 0 and self.on_think:
-                    self.on_think(text[:i])
-                text = text[i + len("</think>"):]
-                self.in_think = False
-                if self.on_think_end is not None and not self.suppress_reply:
-                    if self.on_think_end():
-                        self.suppress_reply = True
-            else:
-                i = text.find("<think>")
-                if i == -1:
-                    keep = self._partial_tail(text, "<think>")
-                    emit, self.buf = (text[:-keep], text[-keep:]) if keep else (text, "")
-                    self._emit_reply(emit)
-                    return
-                if i > 0:
-                    self._emit_reply(text[:i])
-                text = text[i + len("<think>"):]
-                self.in_think = True
-
-    def flush(self) -> None:
-        if self.buf:
-            if self.in_think and self.on_think:
-                self.on_think(self.buf)
-            elif not self.in_think:
-                self._emit_reply(self.buf)
-            self.buf = ""
-
 from dotenv import load_dotenv
 
 from leo.cli.banner import render_leo_banner
+from leo.core.agent import (
+    REPLAN_CAP,
+    _ThinkStripper,
+    _inject_lesson_message,
+    _split_think,
+    _tool_call_views,
+    run_turn,
+)
 from leo.core.lessons import LessonStore, LessonScope, WriteError
 from leo.core.lessons.reflector import (
     CreateOp,
@@ -105,6 +33,7 @@ from leo.core.lessons.schema import SchemaError, parse_lesson_text
 from leo.core.llm import LLM
 from leo.core.session import (
     Session,
+    append_event,
     append_messages,
     count_messages,
     delete_session,
@@ -113,6 +42,14 @@ from leo.core.session import (
     list_sessions,
     load_session,
     new_session,
+)
+from leo.core.setup import (
+    DEFAULT_SYSTEM_PROMPT,
+    LESSONS_ROOT,
+    SKILLS_ROOT,
+    WORKSPACE_MARKER,
+    WORKSPACE_SUBDIRS,
+    build_run_context,
 )
 from leo.core.skill_core import discover_skills
 from leo.core.tools import TOOLS_SCHEMA, ToolContext, dispatch
@@ -128,21 +65,6 @@ except ImportError:
             def end(self, **_k):
                 pass
         yield _Noop()
-
-DEFAULT_SYSTEM_PROMPT = "You are Leo, a helpful assistant."
-SKILLS_ROOT = Path.home() / ".leo" / "skills"
-LESSONS_ROOT = Path.home() / ".leo" / "lessons"
-
-WORKSPACE_MARKER = ".leo"
-WORKSPACE_SUBDIRS = ("skills", "lessons", "memory", "sessions")
-
-
-def _workspace_skills_root(workspace: Path) -> Path:
-    return workspace / WORKSPACE_MARKER / "skills"
-
-
-def _workspace_lessons_root(workspace: Path) -> Path:
-    return workspace / WORKSPACE_MARKER / "lessons"
 
 
 def _cmd_init(argv: list[str]) -> int:
@@ -233,10 +155,22 @@ def _cmd_session(argv: list[str]) -> int:
         help="workspace directory (default: cwd)",
     )
     sub = parser.add_subparsers(dest="op", required=True)
-    sub.add_parser("list", help="list sessions in the workspace")
+    # `--workspace` is also accepted after the verb so both orderings work
+    # (`leo session --workspace X list` and `leo session list --workspace X`).
+    # `default=SUPPRESS` keeps the subparser from clobbering the parent's
+    # value when the flag is omitted on the child side.
+    ws_kwargs = dict(
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help="workspace directory (default: cwd)",
+    )
+    p_list = sub.add_parser("list", help="list sessions in the workspace")
+    p_list.add_argument("--workspace", **ws_kwargs)
     p_show = sub.add_parser("show", help="show meta + message count for a session")
+    p_show.add_argument("--workspace", **ws_kwargs)
     p_show.add_argument("id")
     p_rm = sub.add_parser("rm", help="delete a session")
+    p_rm.add_argument("--workspace", **ws_kwargs)
     p_rm.add_argument("id")
     args = parser.parse_args(argv)
     workspace = _resolve_workspace(args.workspace)
@@ -693,196 +627,6 @@ def _parse_task_file(text: str) -> tuple[str, list[str]]:
     return prompt, cmds
 
 
-REPLAN_CAP = 2  # max replans per tool-call boundary, per design doc
-
-
-def _inject_lesson_message(
-    messages: list[dict],
-    text: str,
-    matched_ids: list[str],
-    injected_ids: set[str],
-) -> None:
-    """Append a mid-loop lesson note and update the dedup set.
-
-    The role is `user`, not `system` — many chat templates (Qwen3 / vLLM
-    among them) reject system messages mid-conversation. The rendered text
-    starts with `[System note: ...]` so the LLM still recognizes it as
-    out-of-band guidance, not user discourse.
-    """
-    if not text:
-        return
-    messages.append({"role": "user", "content": text})
-    injected_ids.update(matched_ids)
-
-
-def _tool_call_views(tool_calls) -> list:
-    from leo.core.lessons import ToolCallView
-    return [
-        ToolCallView(name=tc.function.name, arguments=tc.function.arguments or "")
-        for tc in tool_calls
-    ]
-
-
-def run_turn(
-    messages: list[dict],
-    *,
-    llm: LLM,
-    skills,
-    workspace: Path,
-    think_on: bool,
-    net_on: bool,
-    on_reply,
-    on_think,
-    on_tool,
-    lessons=None,
-    lesson_scope=None,
-    injected_ids: set[str] | None = None,
-    on_replan=None,
-    on_lesson_inject=None,
-    loaded_skills: set[str] | None = None,
-) -> str:
-    """Drive LLM + tool-call loop until no more tool calls. Returns final reply text.
-
-    When `lessons` and `lesson_scope` are provided, applies mid-loop hooks:
-    - `on_tool_call` matches drive a replan (LLM re-prompted with the matched
-      lesson, original draft popped from history).
-    - `on_monologue` matches against the thinking text at the `</think>`
-      boundary; on a hit, live reply emission is suppressed and the LLM is
-      replanned with the lesson injected. Also runs against each tool result.
-    """
-    if injected_ids is None:
-        injected_ids = set()
-
-    reply_text = ""
-    while True:
-        # Inner replan loop: keep re-calling the LLM until no replan trigger
-        # fires (on_monologue at think-boundary or on_tool_call), the cap is
-        # hit, or the response has no tool calls.
-        replan_count = 0
-        while True:
-            think_buf: list[str] = []
-            mono_match: dict = {"text": "", "ids": []}
-
-            def _accum_think(s: str) -> None:
-                think_buf.append(s)
-                if on_think is not None:
-                    on_think(s)
-
-            def _check_think_end() -> bool:
-                if lessons is None or lesson_scope is None:
-                    return False
-                text, ids = lessons.apply_on_monologue(
-                    lesson_scope, "".join(think_buf), injected_ids,
-                )
-                if not ids:
-                    return False
-                mono_match["text"] = text
-                mono_match["ids"] = ids
-                # Suppress live reply only if we can actually replan; if the
-                # budget is exhausted, let the reply stream and just register
-                # the lesson into history below.
-                return replan_count < REPLAN_CAP
-
-            stripper = _ThinkStripper(
-                on_reply=on_reply,
-                on_think=_accum_think,
-                on_think_end=_check_think_end,
-                start_in_think=think_on,
-            )
-            msg = llm.chat(
-                messages,
-                enable_thinking=think_on,
-                tools=TOOLS_SCHEMA,
-                on_text=stripper.feed,
-                on_reasoning=on_think,
-            )
-            stripper.flush()
-            _, reply_text = _split_think(msg.content)
-            entry: dict = {"role": "assistant", "content": msg.content}
-            if msg.tool_calls:
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ]
-            messages.append(entry)
-
-            # on_monologue replan: a lesson fired against the thinking text;
-            # the live reply was suppressed by the stripper. Pop the draft,
-            # inject the lesson, and re-call the LLM.
-            if mono_match["ids"] and replan_count < REPLAN_CAP:
-                messages.pop()
-                _inject_lesson_message(
-                    messages, mono_match["text"], mono_match["ids"], injected_ids,
-                )
-                if on_replan is not None:
-                    on_replan(mono_match["ids"])
-                replan_count += 1
-                continue
-            # Cap hit: reply was allowed to stream; still register the lesson
-            # so it influences the next turn.
-            if mono_match["ids"]:
-                _inject_lesson_message(
-                    messages, mono_match["text"], mono_match["ids"], injected_ids,
-                )
-                if on_lesson_inject is not None:
-                    on_lesson_inject("on_monologue", mono_match["ids"])
-
-            # on_tool_call replan: only relevant if we have tool calls and a
-            # lesson store.
-            if (
-                msg.tool_calls
-                and lessons is not None
-                and lesson_scope is not None
-                and replan_count < REPLAN_CAP
-            ):
-                text, ids = lessons.apply_on_tool_call(
-                    lesson_scope,
-                    _tool_call_views(msg.tool_calls),
-                    injected_ids,
-                )
-                if ids:
-                    messages.pop()
-                    _inject_lesson_message(messages, text, ids, injected_ids)
-                    if on_replan is not None:
-                        on_replan(ids)
-                    replan_count += 1
-                    continue
-            break
-
-        if not msg.tool_calls:
-            return reply_text
-
-        # Dispatch tool calls; on_monologue runs against each result.
-        ctx_obj = ToolContext(
-            workspace=workspace, net_on=net_on,
-            skills={s.name: s for s in skills},
-            loaded_skills=loaded_skills if loaded_skills is not None else set(),
-        )
-        for tc in msg.tool_calls:
-            result = dispatch(tc.function.name, tc.function.arguments, ctx_obj)
-            on_tool(tc.function.name, tc.function.arguments, result)
-            messages.append(
-                {"role": "tool", "tool_call_id": tc.id, "content": result}
-            )
-            if lessons is not None and lesson_scope is not None:
-                blob = (
-                    f"{tc.function.name} {tc.function.arguments or ''} {result}"
-                )
-                text, ids = lessons.apply_on_monologue(
-                    lesson_scope, blob, injected_ids,
-                )
-                _inject_lesson_message(messages, text, ids, injected_ids)
-                if ids and on_lesson_inject is not None:
-                    on_lesson_inject("on_monologue", ids)
-
-
 def run_task_mode(
     task_file: str,
     system_prompt: str,
@@ -1061,47 +805,16 @@ def main() -> None:
 
     workspace = _resolve_workspace(args.workspace)
 
-    if args.sysprompt:
-        system_prompt = Path(args.sysprompt).read_text()
-    else:
-        system_prompt = DEFAULT_SYSTEM_PROMPT
-
-    global_skills = discover_skills(SKILLS_ROOT)
-    workspace_skills = discover_skills(_workspace_skills_root(workspace))
-    # Workspace wins on name collision.
-    _by_name = {s.name: s for s in global_skills}
-    for s in workspace_skills:
-        _by_name[s.name] = s
-    skills = list(_by_name.values())
-    if skills:
-        lines = "\n".join(f"- {s.name}: {s.description}" for s in skills)
-        system_prompt = (
-            f"{system_prompt}\n\n"
-            "Available skills. Before attempting a task, check this list. "
-            "If a skill's description matches the task, you MUST call "
-            "load_skill(name) FIRST and follow its instructions — do not "
-            "try to solve the task ad-hoc. After every tool result, "
-            "re-check this list against what you just observed (not just "
-            "the original user query) before choosing the next tool — a "
-            "skill may match a symptom that only becomes visible after a "
-            "fetch or command runs.\n\n"
-            f"{lines}"
-        )
-
-    llm = LLM()
-
-    # Workspace lessons root is first so reflector writes land there.
-    lessons = LessonStore([_workspace_lessons_root(workspace), LESSONS_ROOT])
-    for issue in lessons.issues:
+    base_sp = Path(args.sysprompt).read_text() if args.sysprompt else None
+    ctx = build_run_context(workspace, base_system_prompt=base_sp)
+    system_prompt = ctx.system_prompt
+    skills = ctx.skills
+    llm = ctx.llm
+    lessons = ctx.lessons
+    lesson_scope = ctx.lesson_scope
+    phase1_ids = ctx.phase1_ids
+    for issue in ctx.lesson_issues:
         print(f"(lesson {issue.path.name}: {issue.reason})", file=sys.stderr)
-    lesson_scope = LessonScope(
-        project=os.environ.get("LEO_PROJECT"),
-        model=llm.model,
-        skills=frozenset(s.name for s in skills),
-    )
-    lessons_block, phase1_ids = lessons.apply_session_start(lesson_scope)
-    if lessons_block:
-        system_prompt = f"{system_prompt}\n\n{lessons_block}"
 
     if args.task:
         if args.session:
@@ -1343,6 +1056,14 @@ def main() -> None:
                 flags["reply_started"] = False
                 flags["think_started"] = False
 
+            def on_event(type_: str, payload: dict) -> None:
+                # Silent disk-side observability stream. Display behavior is
+                # driven by the on_reply / on_think / on_tool / on_replan /
+                # on_lesson_inject callbacks above; events.jsonl exists so
+                # the web UI (or a future `leo session trace`) can replay
+                # the run.
+                append_event(session, type_, payload)
+
             reply_text = run_turn(
                 messages, llm=llm, skills=skills, workspace=workspace,
                 think_on=state["think_on"], net_on=state["net_on"],
@@ -1350,6 +1071,7 @@ def main() -> None:
                 lessons=lessons, lesson_scope=lesson_scope,
                 injected_ids=injected_ids, on_replan=on_replan,
                 on_lesson_inject=on_lesson_inject,
+                on_event=on_event,
                 loaded_skills=loaded_skills,
             )
             rt.end(outputs={"reply": reply_text})

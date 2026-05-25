@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- LEO favicon: 力 (lì — "action/power") in white on Illini Orange.
+       Single bold glyph chosen to stay legible down to 16×16. The full
+       brand mark "LEO 力行智能" is illegible at favicon scale; this is
+       the most recognizable single-glyph reduction. -->
+  <rect width="64" height="64" rx="12" fill="#FF5F05"/>
+  <text
+    x="32" y="50"
+    text-anchor="middle"
+    font-family='"PingFang SC","Hiragino Sans","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",system-ui,sans-serif'
+    font-size="54"
+    font-weight="800"
+    fill="#FFFFFF"
+  >力</text>
+</svg>

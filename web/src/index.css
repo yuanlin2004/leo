@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* -- Illini brand theme ------------------------------------------------
+ *
+ * Per brand.illinois.edu/visual-identity/color and the web-ui-design doc:
+ * Illini Orange (#FF5F05) is the primary accent, Illini Blue (#13294B) is
+ * deep navy for the dark theme background and structural chrome, with
+ * neutral grays carrying body content. Orange never appears as body text
+ * (3.0:1 contrast on white fails AA); see the accessibility section of
+ * web-ui-design.md for the rules. */
+
+@theme {
+  --color-illini-orange: #ff5f05;
+  --color-illini-orange-light: #ff8a3d;
+  --color-illini-blue: #13294b;
+  --color-illini-blue-light: #1e3a6c;
+
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* shadcn-style CSS variables. Dark theme uses Illini Blue for the page
+ * surface instead of shadcn's default near-black — that gives the UI a
+ * distinctly Illinois feel rather than a generic dark mode. */
+
+:root {
+  --background: 0 0% 100%;          /* white */
+  --foreground: 222 47% 11%;        /* near-black text */
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --ring: 18 100% 51%;              /* Illini Orange */
+  --primary: 18 100% 51%;           /* Illini Orange */
+  --primary-foreground: 0 0% 100%;  /* white on orange — passes AA */
+  --secondary: 220 14% 96%;
+  --secondary-foreground: 222 47% 11%;
+  --accent: 220 14% 96%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  /* Links on light theme: Illini Blue, not orange (orange on white fails AA) */
+  --link: 215 58% 19%;
+}
+
+.dark {
+  --background: 215 58% 19%;        /* Illini Blue */
+  --foreground: 220 14% 96%;        /* near-white */
+  --muted: 215 35% 25%;
+  --muted-foreground: 220 9% 70%;
+  --card: 215 45% 23%;
+  --card-foreground: 220 14% 96%;
+  --border: 215 25% 32%;
+  --input: 215 25% 32%;
+  --ring: 18 100% 51%;
+  --primary: 18 100% 51%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 215 35% 25%;
+  --secondary-foreground: 220 14% 96%;
+  --accent: 215 35% 25%;
+  --accent-foreground: 220 14% 96%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  /* Links on dark theme: lighter orange tint, verified ≥4.5:1 against blue */
+  --link: 22 100% 62%;              /* ~#FF8A3D */
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-link: hsl(var(--link));
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+a {
+  color: hsl(var(--link));
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+}

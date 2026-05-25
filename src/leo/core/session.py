@@ -4,6 +4,8 @@ A session lives at `<workspace>/.leo/sessions/<id>/`:
   meta.json       — id, title, started_at, last_active, model, toggles,
                     reflection_idx, injected_ids, loaded_skills
   messages.jsonl  — one JSON message object per line, append-only
+  events.jsonl    — one JSON event envelope per line, append-only
+                    (observability stream — see core/events.py)
   artifacts/      — reserved for per-session scratch (unused in v1)
 """
 
@@ -15,6 +17,8 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+from leo.core.events import Event
 
 SESSIONS_SUBDIR = "sessions"
 _ID_CHARS = "abcdefghijkmnopqrstuvwxyz23456789"  # no 0/1/l confusables
@@ -52,6 +56,9 @@ class Session:
     toggles: dict = field(default_factory=dict)
     injected_ids: list[str] = field(default_factory=list)
     loaded_skills: list[str] = field(default_factory=list)
+    # In-memory only — not persisted to meta.json. Source of truth for the
+    # value is events.jsonl itself; recomputed on session load.
+    next_event_seq: int = 1
 
     # ---- on-disk paths --------------------------------------------------
     @property
@@ -61,6 +68,10 @@ class Session:
     @property
     def messages_path(self) -> Path:
         return self.dir / "messages.jsonl"
+
+    @property
+    def events_path(self) -> Path:
+        return self.dir / "events.jsonl"
 
     @property
     def artifacts_dir(self) -> Path:
@@ -110,6 +121,7 @@ def new_session(
     )
     # Initialize files so an empty session is still well-formed.
     session.messages_path.touch()
+    session.events_path.touch()
     session.write_meta()
     return session
 
@@ -140,6 +152,7 @@ def load_session(workspace: Path, sid: str) -> tuple[Session, list[dict]]:
             if not line:
                 continue
             messages.append(json.loads(line))
+    session.next_event_seq = _scan_next_event_seq(session.events_path)
     return session, messages
 
 
@@ -150,6 +163,75 @@ def append_messages(session: Session, new_msgs: list[dict]) -> None:
         for m in new_msgs:
             f.write(json.dumps(m, ensure_ascii=False) + "\n")
     session.write_meta()
+
+
+def _scan_next_event_seq(path: Path) -> int:
+    """Return the seq to assign to the next event.
+
+    Reads the file line-by-line; the last well-formed line's seq + 1
+    becomes the next seq. An empty or missing file resets to 1. A
+    line that fails to parse is skipped (best-effort — we never want
+    persistence layer corruption to refuse a resume).
+    """
+    if not path.is_file():
+        return 1
+    last_seq = 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            seq = int(obj.get("seq", 0))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if seq > last_seq:
+            last_seq = seq
+    return last_seq + 1
+
+
+def append_event(session: Session, type: str, payload: dict) -> Event:
+    """Persist one event to <session>/events.jsonl and return it.
+
+    Assigns `seq` from the session's in-memory counter and `ts` from
+    the wall clock. Does not write meta — events are high-frequency
+    and meta.write on every event would be wasteful. `last_active`
+    is refreshed via `append_messages` on turn boundaries.
+    """
+    ev = Event(seq=session.next_event_seq, ts=_now_iso(), type=type, payload=payload)
+    session.next_event_seq += 1
+    with session.events_path.open("a") as f:
+        f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
+    return ev
+
+
+def read_events(session: Session, *, since: int = 0) -> list[Event]:
+    """Read events with seq > since from disk.
+
+    Used by the (forthcoming) web SSE endpoint to backfill before
+    switching to live tailing.
+    """
+    out: list[Event] = []
+    if not session.events_path.is_file():
+        return out
+    for line in session.events_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            seq = int(obj.get("seq", 0))
+            if seq <= since:
+                continue
+            out.append(Event(
+                seq=seq,
+                ts=obj.get("ts", ""),
+                type=obj.get("type", ""),
+                payload=obj.get("payload") or {},
+            ))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return out
 
 
 def list_sessions(workspace: Path) -> list[Session]:

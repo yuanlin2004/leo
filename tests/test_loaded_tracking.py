@@ -98,7 +98,7 @@ class FakeLLM:
         self.max_tokens = 0
 
     def chat(self, messages, enable_thinking=True, tools=None,
-             on_text=None, on_reasoning=None):
+             on_text=None, on_reasoning=None, should_stop=None):
         if not self.scripted:
             raise RuntimeError("FakeLLM out of scripted responses")
         return self.scripted.pop(0)

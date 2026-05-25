@@ -55,6 +55,7 @@ class LLM:
         tools: list[dict] | None = None,
         on_text: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ):
         kwargs = {
             "model": self.model,
@@ -67,7 +68,7 @@ class LLM:
             kwargs["tools"] = tools
         for attempt in range(RETRY_MAX_ATTEMPTS):
             try:
-                return self._stream_once(kwargs, on_text, on_reasoning)
+                return self._stream_once(kwargs, on_text, on_reasoning, should_stop)
             except Exception as e:
                 if attempt == RETRY_MAX_ATTEMPTS - 1 or not _is_retryable(e):
                     raise
@@ -75,12 +76,27 @@ class LLM:
                 print(f"\n(llm retry {attempt + 1}/{RETRY_MAX_ATTEMPTS - 1} after {type(e).__name__}: sleeping {delay:.1f}s)")
                 time.sleep(delay)
 
-    def _stream_once(self, kwargs, on_text, on_reasoning):
+    def _stream_once(self, kwargs, on_text, on_reasoning, should_stop=None):
+        """Drive one streaming chat-completions call.
+
+        If `should_stop` is given and returns truthy between chunks, we
+        close the upstream stream and return the partial assembly. The
+        caller is responsible for noticing the cancellation and not
+        committing the partial result to history.
+        """
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[int, dict] = {}
         stream = self.client.chat.completions.create(**kwargs)
         for chunk in stream:
+            if should_stop is not None and should_stop():
+                # Close the HTTP stream so the server can free its slot,
+                # then return whatever was assembled so far.
+                try:
+                    stream.response.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                break
             if chunk.usage is not None:
                 self.last_total_tokens = chunk.usage.total_tokens
             if not chunk.choices:

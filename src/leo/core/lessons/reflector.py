@@ -158,14 +158,44 @@ def build_reflection_messages(
         {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                "Existing lessons in scope (id | category | title | trigger):\n"
-                f"{_summarize_lessons(in_scope)}\n\n"
-                "Conversation trace:\n"
-                f"{_serialize_trace(trace)}\n"
-            ),
+            "content": _build_user_prompt(in_scope, trace, strict=False),
         },
     ]
+
+
+def _build_user_prompt(
+    in_scope: list[Lesson], trace: list[dict], *, strict: bool,
+) -> str:
+    """Construct the reflection user message.
+
+    `strict=True` adds an even louder format directive for the retry
+    path when the first attempt didn't produce JSON.
+    """
+    head = (
+        "Existing lessons in scope (id | category | title | trigger):\n"
+        f"{_summarize_lessons(in_scope)}\n\n"
+        # Wrap the trace in explicit delimiters so the model doesn't
+        # blur it with its own response. Smaller models often try to
+        # continue the trace as if it were ongoing chat — these markers
+        # make the boundary unambiguous.
+        "=== BEGIN CONVERSATION TRACE ===\n"
+        f"{_serialize_trace(trace)}\n"
+        "=== END CONVERSATION TRACE ===\n\n"
+        "You are now the reflection agent (NOT the chat assistant from "
+        "the trace above). Do NOT continue the conversation. Produce "
+        "your reflection.\n\n"
+        "Reply with ONE JSON object and nothing else — no prose before "
+        "or after, no code fence, no acknowledgement. Your response "
+        'must start with `{` and end with `}`. The schema is documented '
+        "in the system prompt."
+    )
+    if strict:
+        head += (
+            "\n\nIMPORTANT — your previous response did NOT begin with "
+            "`{`. Output ONLY the JSON object. If you have nothing to "
+            "learn, output `{\"ops\": []}`."
+        )
+    return head
 
 
 def _summarize_lessons(lessons: list[Lesson]) -> str:
@@ -222,9 +252,22 @@ def parse_ops(text: str) -> list[Op]:
         envelope = json.loads(payload)
     except json.JSONDecodeError as e:
         raise ReflectorError(f"reflector output is not valid JSON: {e}") from e
-    if not isinstance(envelope, dict) or "ops" not in envelope:
-        raise ReflectorError("envelope must be an object with an 'ops' field")
-    raw_ops = envelope.get("ops") or []
+    # Tolerant unwrap — small reflector LLMs sometimes drop the envelope
+    # or rename the key. Accept any of:
+    #   {"ops": [...]}             — canonical
+    #   {"operations": [...]}      — common misnaming
+    #   [...]                       — bare list, no envelope
+    if isinstance(envelope, list):
+        raw_ops = envelope
+    elif isinstance(envelope, dict):
+        if "ops" in envelope:
+            raw_ops = envelope.get("ops") or []
+        elif "operations" in envelope:
+            raw_ops = envelope.get("operations") or []
+        else:
+            raise ReflectorError("envelope must be an object with an 'ops' field")
+    else:
+        raise ReflectorError("envelope must be an object or list")
     if not isinstance(raw_ops, list):
         raise ReflectorError("'ops' must be a list")
 
@@ -259,10 +302,19 @@ def _extract_json_object(text: str) -> str | None:
     m = _FENCE_RE.search(text)
     if m:
         return m.group(1).strip()
-    # 2. Scan for the first balanced JSON object.
-    start = text.find("{")
-    if start < 0:
+    # 2. Scan for the first balanced JSON object or array, whichever
+    # appears first. Some reflector LLMs skip the envelope and emit a
+    # bare list of ops — parse_ops accepts that shape.
+    obj_start = text.find("{")
+    arr_start = text.find("[")
+    candidates = [(s, op, cl) for s, op, cl in (
+        (obj_start, "{", "}"),
+        (arr_start, "[", "]"),
+    ) if s >= 0]
+    if not candidates:
         return None
+    # Pick the earliest opener.
+    start, opener, closer = min(candidates, key=lambda t: t[0])
     depth = 0
     in_str = False
     esc = False
@@ -278,9 +330,9 @@ def _extract_json_object(text: str) -> str | None:
             continue
         if ch == '"':
             in_str = True
-        elif ch == "{":
+        elif ch == opener:
             depth += 1
-        elif ch == "}":
+        elif ch == closer:
             depth -= 1
             if depth == 0:
                 return text[start : i + 1]
@@ -301,12 +353,41 @@ def reflect(
     trace: list[dict],
     in_scope: list[Lesson],
 ) -> ReflectionResult:
-    """Run the reflector LLM call and return parsed ops."""
-    messages = build_reflection_messages(trace, in_scope)
-    msg = llm.chat(messages, enable_thinking=False, tools=None)
-    raw = (msg.content or "").strip()
-    ops = parse_ops(raw)
-    return ReflectionResult(ops=ops, raw_response=raw)
+    """Run the reflector LLM call and return parsed ops.
+
+    One automatic retry on parse failure with a louder format directive
+    — small open-source models commonly ignore the JSON-only rule on
+    the first try and produce a conversational continuation instead.
+
+    Raises ReflectorError if both attempts fail; the message includes
+    a truncated snippet of the last raw output so callers can surface
+    useful diagnostic info.
+    """
+    sys_msg = {"role": "system", "content": REFLECTION_SYSTEM_PROMPT}
+    last_raw = ""
+    last_err: ReflectorError | None = None
+    for attempt, strict in enumerate((False, True)):
+        messages = [
+            sys_msg,
+            {"role": "user", "content": _build_user_prompt(
+                in_scope, trace, strict=strict,
+            )},
+        ]
+        msg = llm.chat(messages, enable_thinking=False, tools=None)
+        last_raw = (msg.content or "").strip()
+        try:
+            ops = parse_ops(last_raw)
+        except ReflectorError as e:
+            last_err = e
+            continue
+        return ReflectionResult(ops=ops, raw_response=last_raw)
+    # Both attempts failed.
+    snippet = last_raw if len(last_raw) <= 400 else last_raw[:400] + "…"
+    if not snippet:
+        snippet = "(empty response)"
+    raise ReflectorError(
+        f"{last_err} — raw output: {snippet!r}"
+    ) from last_err
 
 
 __all__ = [

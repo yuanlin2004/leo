@@ -41,11 +41,32 @@ def test_parse_ops_invalid_json_inside_braces():
         parse_ops('{"ops": [1,]}')  # trailing comma, balanced braces
 
 
-def test_parse_ops_top_level_array_not_recognized():
-    # The extractor only looks for {...}; a bare array is rejected as
-    # "no JSON envelope found". The reflector prompt asks for an object.
+def test_parse_ops_no_brackets_raises():
+    # Pure prose with no JSON object or array → "no JSON envelope found".
     with pytest.raises(ReflectorError, match="no JSON envelope"):
+        parse_ops("just some prose, no json here at all")
+
+
+def test_parse_ops_bare_array_of_non_objects_raises_op_error():
+    # A bare array is now extracted (some reflectors skip the envelope),
+    # but its contents must still be op-dicts. A list of strings fails
+    # at the per-op validation step with a clearer error.
+    with pytest.raises(ReflectorError, match="op\\[0\\] is not an object"):
         parse_ops('["not", "an", "object"]')
+
+
+def test_parse_ops_bare_array_of_skip_ops_works():
+    # Bare list with proper op shapes is accepted as if it were {"ops": [...]}.
+    ops = parse_ops('[{"op": "skip", "reason": "nothing notable"}]')
+    assert len(ops) == 1
+    assert ops[0].reason == "nothing notable"
+
+
+def test_parse_ops_operations_envelope_key():
+    # `{"operations": [...]}` is accepted as a synonym for `{"ops": [...]}`.
+    ops = parse_ops('{"operations": [{"op": "skip", "reason": "x"}]}')
+    assert len(ops) == 1
+    assert ops[0].reason == "x"
 
 
 def test_parse_ops_object_without_ops_key_raises():
